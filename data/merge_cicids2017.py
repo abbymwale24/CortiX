@@ -94,8 +94,9 @@ def merge_dataset(input_dir: str = "data/cicids2017", output_path: str = "data/c
         try:
             df = pd.read_csv(path, encoding="utf-8", low_memory=False)
             df.columns = df.columns.str.strip()
+            df = df.sample(frac=0.1, random_state=42)  # Sample 10% to prevent OOM
             frames.append(df)
-            logger.info("    → %d rows, %d columns", len(df), len(df.columns))
+            logger.info("    → %d rows (sampled), %d columns", len(df), len(df.columns))
         except Exception as exc:
             logger.error("    ✗ Failed to load %s: %s", csv_file, exc)
 

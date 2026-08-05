@@ -146,6 +146,7 @@ class HebbianEnsemble:
             "vote_ratio": anomaly_votes / max(self.M, 1),
             "learning_rate": eta,
             "warming_up": warming_up,
+            "hidden_state": np.concatenate(module_spikes_list)
         }
 
         return result

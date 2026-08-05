@@ -8,7 +8,7 @@ function Attackers() {
   useEffect(() => {
     axios.get("http://localhost:8000/api/attackers")
       .then((res) => setAttackers(res.data))
-      .catch((err) => console.debug("Offline API mock"));
+      .catch(() => {});
   }, []);
 
   return (
@@ -18,47 +18,60 @@ function Attackers() {
         <p style={{ color: "#9ca3af", margin: 0 }}>Passive OSINT-derived profiles of identified adversaries.</p>
       </div>
 
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-        gap: "24px"
-      }}>
-        {(attackers.length > 0 ? attackers : sampleAttackers).map((attacker, idx) => (
-          <div key={idx} style={{
-            backgroundColor: "#11141e",
-            borderRadius: "16px",
-            border: "1px solid #1f2937",
-            padding: "24px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "16px",
-            boxShadow: "0 4px 20px rgba(0, 0, 0, 0.4)"
-          }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontSize: "18px", fontWeight: "bold", color: "#ef4444" }}>{attacker.ip}</div>
-              <span style={threatBadgeStyle(attacker.threat_level)}>{attacker.threat_level}</span>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px", borderTop: "1px solid #1f2937", paddingTop: "16px" }}>
-              <div style={infoRow}><MapPin size={16} color="#9ca3af" /> <strong>Location:</strong> {attacker.city}, {attacker.country}</div>
-              <div style={infoRow}><Globe size={16} color="#9ca3af" /> <strong>ISP/ASN:</strong> {attacker.isp} ({attacker.asn})</div>
-              <div style={infoRow}><Compass size={16} color="#9ca3af" /> <strong>Reverse DNS:</strong> {attacker.hostname}</div>
-            </div>
-
-            <div style={{
+      {attackers.length === 0 ? (
+        <div style={{
+          backgroundColor: "#11141e",
+          borderRadius: "16px",
+          border: "1px solid #1f2937",
+          padding: "40px",
+          textAlign: "center",
+          color: "#6b7280",
+        }}>
+          No attacker profiles recorded yet. Profiles are created when threats are detected.
+        </div>
+      ) : (
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+          gap: "24px"
+        }}>
+          {attackers.map((attacker, idx) => (
+            <div key={idx} style={{
+              backgroundColor: "#11141e",
+              borderRadius: "16px",
+              border: "1px solid #1f2937",
+              padding: "24px",
               display: "flex",
-              justifyContent: "space-between",
-              backgroundColor: "#161b26",
-              padding: "12px",
-              borderRadius: "8px",
-              fontSize: "13px"
+              flexDirection: "column",
+              gap: "16px",
+              boxShadow: "0 4px 20px rgba(0, 0, 0, 0.4)"
             }}>
-              <div>Abuse Score: <strong style={{ color: "#eab308" }}>{attacker.abuse_score}/100</strong></div>
-              <div>VT Verdicts: <strong style={{ color: "#ef4444" }}>{attacker.vt_malicious}</strong></div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: "18px", fontWeight: "bold", color: "#ef4444" }}>{attacker.ip}</div>
+                <span style={threatBadgeStyle(attacker.threat_level)}>{attacker.threat_level}</span>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px", borderTop: "1px solid #1f2937", paddingTop: "16px" }}>
+                <div style={infoRow}><MapPin size={16} color="#9ca3af" /> <strong>Location:</strong> {attacker.city}, {attacker.country}</div>
+                <div style={infoRow}><Globe size={16} color="#9ca3af" /> <strong>ISP/ASN:</strong> {attacker.isp} ({attacker.asn})</div>
+                <div style={infoRow}><Compass size={16} color="#9ca3af" /> <strong>Reverse DNS:</strong> {attacker.hostname}</div>
+              </div>
+
+              <div style={{
+                display: "flex",
+                justifyContent: "space-between",
+                backgroundColor: "#161b26",
+                padding: "12px",
+                borderRadius: "8px",
+                fontSize: "13px"
+              }}>
+                <div>Abuse Score: <strong style={{ color: "#eab308" }}>{attacker.abuse_score}/100</strong></div>
+                <div>VT Verdicts: <strong style={{ color: "#ef4444" }}>{attacker.vt_malicious}</strong></div>
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -87,10 +100,5 @@ const threatBadgeStyle = (lvl) => {
     color: val.text
   };
 };
-
-const sampleAttackers = [
-  { ip: "185.12.5.4", country: "CN", city: "Shanghai", isp: "China Telecom", asn: "AS4134", hostname: "shanghai.isp.net", abuse_score: 87, vt_malicious: 12, threat_level: "CRITICAL" },
-  { ip: "91.24.18.15", country: "RU", city: "Moscow", isp: "Rostelecom", asn: "AS12389", hostname: "moscow.telecom.ru", abuse_score: 52, vt_malicious: 3, threat_level: "HIGH" },
-];
 
 export default Attackers;

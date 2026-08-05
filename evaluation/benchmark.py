@@ -156,6 +156,7 @@ def evaluate_snn(
     labels_binary: np.ndarray,
     labels_class: list[str],
     warmup_samples: int = 500,
+    warmup_features: np.ndarray = None,
 ) -> dict:
     """
     Evaluate the Hebbian SNN ensemble on test data.
@@ -170,20 +171,30 @@ def evaluate_snn(
     encoder = SpikeEncoder(num_features=features.shape[1])
     ensemble = HebbianEnsemble()
 
-    # Phase 1: Warmup with benign traffic to establish baselines
-    benign_indices = np.where(labels_binary == 0)[0]
-    warmup_indices = benign_indices[:warmup_samples]
+    if warmup_features is not None:
+        logger.info("Warmup phase: feeding %d benign samples from dedicated warmup set...", len(warmup_features))
+        for x in warmup_features:
+            spikes = encoder.encode(x)
+            ensemble.process_event(spikes, learn=True)
+        
+        warmup_len = len(warmup_features)
+        eval_indices = list(range(len(features)))
+    else:
+        # Phase 1: Warmup with benign traffic from the test set (synthetic fallback)
+        benign_indices = np.where(labels_binary == 0)[0]
+        warmup_indices = benign_indices[:warmup_samples]
+        warmup_len = len(warmup_indices)
 
-    logger.info("Warmup phase: feeding %d benign samples...", len(warmup_indices))
-    for idx in warmup_indices:
-        spikes = encoder.encode(features[idx])
-        ensemble.process_event(spikes, learn=True)
+        logger.info("Warmup phase: feeding %d benign samples...", len(warmup_indices))
+        for idx in warmup_indices:
+            spikes = encoder.encode(features[idx])
+            ensemble.process_event(spikes, learn=True)
 
-    # Phase 2: Evaluate on all remaining samples
-    eval_indices = list(range(len(features)))
-    # Remove warmup samples from evaluation set
-    eval_set = set(eval_indices) - set(warmup_indices.tolist())
-    eval_indices = sorted(eval_set)
+        # Phase 2: Evaluate on all remaining samples
+        eval_indices = list(range(len(features)))
+        # Remove warmup samples from evaluation set
+        eval_set = set(eval_indices) - set(warmup_indices.tolist())
+        eval_indices = sorted(eval_set)
 
     y_true = []
     y_pred = []
@@ -194,7 +205,13 @@ def evaluate_snn(
         spikes = encoder.encode(features[idx])
 
         t0 = time.perf_counter_ns()
-        result = ensemble.process_event(spikes, learn=True)
+        
+        # Conditional Continual Learning
+        result = ensemble.process_event(spikes, learn=False)
+        pred = 1 if result["is_anomaly"] else 0
+        if pred == 0:
+            ensemble.process_event(spikes, learn=True)
+            
         latency_ms = (time.perf_counter_ns() - t0) / 1e6
 
         y_true.append(labels_binary[idx])
@@ -223,7 +240,7 @@ def evaluate_snn(
     results = {
         "engine": "CortiX Hebbian SNN",
         "samples_evaluated": len(eval_indices),
-        "warmup_samples": len(warmup_indices),
+        "warmup_samples": warmup_len,
         "accuracy": accuracy,
         "precision": precision,
         "recall": recall,
@@ -431,25 +448,143 @@ def print_benchmark_report(results: list[dict]):
 # Main Runner
 # ──────────────────────────────────────────────
 
-def run_benchmark(output_dir: str = "evaluation/results"):
+def run_benchmark(output_dir: str = "evaluation/results", tune_file: str = None):
     """Execute the full benchmark suite."""
+    if tune_file and os.path.exists(tune_file):
+        with open(tune_file, "r") as f:
+            t = json.load(f)
+            config.SLIDING_WINDOW_SIZE = t.get("window_size", config.SLIDING_WINDOW_SIZE)
+            config.ANOMALY_Z_THRESHOLD = t.get("z_threshold", config.ANOMALY_Z_THRESHOLD)
+            config.HEBBIAN_LR = t.get("learning_rate", config.HEBBIAN_LR)
+            config.METAPLASTICITY_ALPHA = t.get("meta_alpha", config.METAPLASTICITY_ALPHA)
+            config.HIDDEN_NEURONS = t.get("hidden_neurons", config.HIDDEN_NEURONS)
+            logger.info("Loaded tuning config: %s", t)
+            
     os.makedirs(output_dir, exist_ok=True)
 
     logger.info("=" * 60)
     logger.info("CORTIX BENCHMARK SUITE — Starting")
     logger.info("=" * 60)
 
-    # Generate synthetic test data
-    features, labels_binary, labels_class = generate_synthetic_flows(
-        num_benign=3000, num_attack=1000
-    )
-    logger.info("Generated %d test samples (%d benign, %d attack)",
-                len(features), np.sum(labels_binary == 0), np.sum(labels_binary == 1))
+    # Load real datasets if requested
+    dataset = args.dataset
+    if dataset == "nslkdd":
+        import pandas as pd
+        from sklearn.preprocessing import MinMaxScaler
+        
+        train_path = "data/nslkdd/KDDTrain+.txt"
+        test_path = "data/nslkdd/KDDTest+.txt"
+        
+        # NSL-KDD columns
+        cols = ["duration","protocol_type","service","flag","src_bytes","dst_bytes","land",
+                "wrong_fragment","urgent","hot","num_failed_logins","logged_in","num_compromised",
+                "root_shell","su_attempted","num_root","num_file_creations","num_shells",
+                "num_access_files","num_outbound_cmds","is_host_login","is_guest_login",
+                "count","srv_count","serror_rate","srv_serror_rate","rerror_rate","srv_rerror_rate",
+                "same_srv_rate","diff_srv_rate","srv_diff_host_rate","dst_host_count",
+                "dst_host_srv_count","dst_host_same_srv_rate","dst_host_diff_srv_rate",
+                "dst_host_same_src_port_rate","dst_host_srv_diff_host_rate","dst_host_serror_rate",
+                "dst_host_srv_serror_rate","dst_host_rerror_rate","dst_host_srv_rerror_rate","label","difficulty"]
+                
+        df_train = pd.read_csv(train_path, names=cols)
+        df_test = pd.read_csv(test_path, names=cols)
+        
+        # Convert categorical
+        for col in ["protocol_type", "service", "flag"]:
+            df_train[col] = df_train[col].astype('category').cat.codes
+            df_test[col] = df_test[col].astype('category').cat.codes
+            
+        X_train = df_train.drop(["label", "difficulty"], axis=1).values
+        y_train = (df_train["label"] != "normal").astype(int).values
+        X_test = df_test.drop(["label", "difficulty"], axis=1).values
+        y_test = (df_test["label"] != "normal").astype(int).values
+        y_test_class = df_test["label"].tolist()
+        
+        # Scale (fit on train only!)
+        scaler = MinMaxScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Select features using SelectKBest
+        from sklearn.feature_selection import SelectKBest, f_classif
+        selector = SelectKBest(f_classif, k=16)
+        selector.fit(X_train_scaled, y_train)
+        
+        X_train_sel = selector.transform(X_train_scaled)
+        X_test_sel = selector.transform(X_test_scaled)
+        
+        # For unsupervised evaluation, we combine a warmup set of benign train data, then evaluate on test data.
+        benign_train = X_train_sel[y_train == 0]
+        warmup_n = min(10000, len(benign_train))
+        warmup_features = benign_train[:warmup_n]
+        
+        features = X_test_sel
+        labels_binary = y_test
+        labels_class = y_test_class
+        logger.info("Loaded NSL-KDD: %d test samples", len(features))
+        
+    elif dataset == "cicids2017":
+        import pandas as pd
+        import glob
+        from sklearn.preprocessing import MinMaxScaler
+        
+        files = glob.glob("data/cicids2017/*.csv")
+        df_list = []
+        for f in files:
+            # Subsample large files to speed up benchmark
+            df_list.append(pd.read_csv(f).sample(frac=0.1, random_state=42))
+        df = pd.concat(df_list, ignore_index=True)
+        
+        # Clean column names
+        df.columns = df.columns.str.strip()
+        
+        # Drop NaNs and Infs
+        df = df.replace([np.inf, -np.inf], np.nan).dropna()
+        
+        label_col = "Label"
+        y = (df[label_col] != "BENIGN").astype(int).values
+        y_class = df[label_col].tolist()
+        X = df.drop(columns=[label_col]).values
+        
+        # Train/Test split
+        from sklearn.model_selection import train_test_split
+        X_train, X_test, y_train, y_test, _, y_test_class = train_test_split(
+            X, y, y_class, test_size=0.3, random_state=42, stratify=y
+        )
+        
+        scaler = MinMaxScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        from sklearn.feature_selection import SelectKBest, f_classif
+        selector = SelectKBest(f_classif, k=16)
+        selector.fit(X_train_scaled, y_train)
+        
+        X_train_sel = selector.transform(X_train_scaled)
+        X_test_sel = selector.transform(X_test_scaled)
+        
+        benign_train = X_train_sel[y_train == 0]
+        warmup_n = min(5000, len(benign_train))
+        warmup_features = benign_train[:warmup_n]
+        
+        features = X_test_sel
+        labels_binary = y_test
+        labels_class = y_test_class
+        logger.info("Loaded CICIDS2017: %d test samples", len(features))
+        
+    else:
+        # Generate synthetic test data
+        features, labels_binary, labels_class = generate_synthetic_flows(
+            num_benign=3000, num_attack=1000
+        )
+        warmup_features = None # Uses default logic inside evaluate_snn
+        logger.info("Generated %d test samples (%d benign, %d attack)",
+                    len(features), np.sum(labels_binary == 0), np.sum(labels_binary == 1))
 
     all_results = []
 
     # 1. SNN Evaluation
-    snn_results = evaluate_snn(features, labels_binary, labels_class)
+    snn_results = evaluate_snn(features, labels_binary, labels_class, warmup_features=warmup_features)
     all_results.append(snn_results)
 
     # 2. Generate Visualisations
@@ -509,5 +644,9 @@ if __name__ == "__main__":
         "--dataset", type=str, default=None,
         help="Path to CICIDS2017 CSV (optional; uses synthetic data if not provided)",
     )
+    parser.add_argument(
+        "--tune_file", type=str, default=None,
+        help="Path to tuning JSON file",
+    )
     args = parser.parse_args()
-    run_benchmark(output_dir=args.output)
+    run_benchmark(output_dir=args.output, tune_file=args.tune_file)

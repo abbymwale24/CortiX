@@ -7,7 +7,7 @@ function Threats() {
   useEffect(() => {
     axios.get("http://localhost:8000/api/threats?limit=50")
       .then((res) => setThreats(res.data))
-      .catch((err) => console.debug("Offline API mock"));
+      .catch(() => {});
   }, []);
 
   return (
@@ -23,36 +23,42 @@ function Threats() {
         border: "1px solid #1f2937",
         padding: "24px"
       }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid #1f2937", color: "#6b7280" }}>
-              <th style={{ padding: "12px 16px" }}>TIMESTAMP</th>
-              <th style={{ padding: "12px 16px" }}>SOURCE IP</th>
-              <th style={{ padding: "12px 16px" }}>DESTINATION</th>
-              <th style={{ padding: "12px 16px" }}>PROTOCOL</th>
-              <th style={{ padding: "12px 16px" }}>ATTACK CLASS</th>
-              <th style={{ padding: "12px 16px" }}>CONFIDENCE</th>
-              <th style={{ padding: "12px 16px" }}>SNN Z-SCORE</th>
-              <th style={{ padding: "12px 16px" }}>ACTION TAKEN</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(threats.length > 0 ? threats : sampleThreats).map((threat, idx) => (
-              <tr key={idx} style={{ borderBottom: "1px solid #1f2937", color: "#d1d5db" }}>
-                <td style={{ padding: "16px" }}>{new Date(threat.timestamp || Date.now()).toLocaleString()}</td>
-                <td style={{ padding: "16px", fontWeight: "bold" }}>{threat.src_ip}</td>
-                <td style={{ padding: "16px" }}>{threat.dst_ip}:{threat.dst_port}</td>
-                <td style={{ padding: "16px" }}>{threat.protocol}</td>
-                <td style={{ padding: "16px" }}>
-                  <span style={badgeStyle(threat.attack_class)}>{threat.attack_class}</span>
-                </td>
-                <td style={{ padding: "16px" }}>{(threat.confidence * 100).toFixed(1)}%</td>
-                <td style={{ padding: "16px" }}>{threat.z_score.toFixed(2)}</td>
-                <td style={{ padding: "16px", color: "#ef4444", fontWeight: "bold" }}>{threat.action_taken}</td>
+        {threats.length === 0 ? (
+          <div style={{ color: "#6b7280", textAlign: "center", padding: "40px" }}>
+            No threat events recorded yet. Start the daemon to begin monitoring.
+          </div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid #1f2937", color: "#6b7280" }}>
+                <th style={{ padding: "12px 16px" }}>TIMESTAMP</th>
+                <th style={{ padding: "12px 16px" }}>SOURCE IP</th>
+                <th style={{ padding: "12px 16px" }}>DESTINATION</th>
+                <th style={{ padding: "12px 16px" }}>PROTOCOL</th>
+                <th style={{ padding: "12px 16px" }}>ATTACK CLASS</th>
+                <th style={{ padding: "12px 16px" }}>CONFIDENCE</th>
+                <th style={{ padding: "12px 16px" }}>SNN Z-SCORE</th>
+                <th style={{ padding: "12px 16px" }}>ACTION TAKEN</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {threats.map((threat, idx) => (
+                <tr key={idx} style={{ borderBottom: "1px solid #1f2937", color: "#d1d5db" }}>
+                  <td style={{ padding: "16px" }}>{new Date(threat.timestamp || Date.now()).toLocaleString()}</td>
+                  <td style={{ padding: "16px", fontWeight: "bold" }}>{threat.src_ip}</td>
+                  <td style={{ padding: "16px" }}>{threat.dst_ip}:{threat.dst_port}</td>
+                  <td style={{ padding: "16px" }}>{threat.protocol}</td>
+                  <td style={{ padding: "16px" }}>
+                    <span style={badgeStyle(threat.attack_class)}>{threat.attack_class}</span>
+                  </td>
+                  <td style={{ padding: "16px" }}>{(threat.confidence * 100).toFixed(1)}%</td>
+                  <td style={{ padding: "16px" }}>{threat.z_score.toFixed(2)}</td>
+                  <td style={{ padding: "16px", color: "#ef4444", fontWeight: "bold" }}>{threat.action_taken}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
@@ -65,6 +71,10 @@ const badgeStyle = (cls) => {
     DDoS: { bg: "#fff5f5", text: "#c53030" },
     PortScan: { bg: "#fffbeb", text: "#92400e" },
     BruteForce: { bg: "#f3e8ff", text: "#6b21a8" },
+    WebAttack: { bg: "#fff7ed", text: "#9a3412" },
+    Infiltration: { bg: "#fdf4ff", text: "#86198f" },
+    Botnet: { bg: "#f0fdf4", text: "#166534" },
+    ZeroDay: { bg: "#fef2f2", text: "#dc2626" },
   };
   const val = colors[cls] || { bg: "#eff6ff", text: "#1e40af" };
   return {
@@ -76,11 +86,5 @@ const badgeStyle = (cls) => {
     color: val.text
   };
 };
-
-const sampleThreats = [
-  { timestamp: new Date().toISOString(), src_ip: "10.0.0.1", dst_ip: "10.0.0.2", dst_port: 80, protocol: "TCP", attack_class: "PortScan", confidence: 0.985, z_score: 5.4, action_taken: "TEMP_BLOCK" },
-  { timestamp: new Date().toISOString(), src_ip: "185.12.5.4", dst_ip: "10.0.0.3", dst_port: 443, protocol: "TCP", attack_class: "DoS", confidence: 0.992, z_score: 11.2, action_taken: "HARD_BLOCK" },
-  { timestamp: new Date().toISOString(), src_ip: "192.168.1.12", dst_ip: "10.0.0.2", dst_port: 22, protocol: "TCP", attack_class: "BENIGN", confidence: 1.0, z_score: 1.1, action_taken: "ALLOW" },
-];
 
 export default Threats;

@@ -173,11 +173,8 @@ class SpikeEncoder:
             self._feature_min = np.minimum(self._feature_min, features)
             self._feature_max = np.maximum(self._feature_max, features)
         else:
-            # After warmup, use exponential moving average
-            alpha = 0.01
-            self._feature_min = (
-                (1 - alpha) * self._feature_min + alpha * features
-            )
+            # After warmup, expand the range slowly if needed, but don't pull it towards the current value!
+            self._feature_min = np.minimum(self._feature_min, features)
             self._feature_max = np.maximum(self._feature_max, features)
 
         # Normalise to [0, 1]

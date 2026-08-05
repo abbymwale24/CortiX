@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
-import { Shield, AlertTriangle, Users, BarChart3, ShieldAlert, Activity } from "lucide-react";
+import { Shield, AlertTriangle, Users, BarChart3, ShieldAlert, Activity, BrainCircuit } from "lucide-react";
 import axios from "axios";
 import Overview from "./pages/Overview";
 import Threats from "./pages/Threats";
 import Attackers from "./pages/Attackers";
 import Metrics from "./pages/Metrics";
 import Containment from "./pages/Containment";
+import BrainView from "./pages/BrainView";
 
 const API_BASE = "http://localhost:8000";
 const WS_URL = "ws://localhost:8000/ws/live";
@@ -176,6 +177,7 @@ function App() {
             <Route path="/attackers" element={<Attackers />} />
             <Route path="/metrics" element={<Metrics />} />
             <Route path="/containment" element={<Containment />} />
+            <Route path="/brain" element={<BrainView />} />
           </Routes>
         </main>
       </div>
@@ -203,6 +205,7 @@ function NavLinks() {
     { to: "/attackers", label: "Attacker Maps", icon: <Users size={20} /> },
     { to: "/metrics", label: "Brain Metrics", icon: <BarChart3 size={20} /> },
     { to: "/containment", label: "Firewall Rules", icon: <Activity size={20} /> },
+    { to: "/brain", label: "Brain State", icon: <BrainCircuit size={20} /> },
   ];
 
   return (

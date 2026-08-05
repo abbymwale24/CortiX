@@ -1,22 +1,21 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import { Shield, AlertOctagon, Skull, Wifi, Activity } from "lucide-react";
+import { Shield, AlertOctagon, Activity, Wifi } from "lucide-react";
 
 function Overview({ liveAlerts }) {
-  const [stats, setStats] = useState({
-    total_threats: 142,
-    active_blocks: 4,
-    p50_latency: "4.2 ms",
-    p99_latency: "12.8 ms"
-  });
-
+  const [stats, setStats] = useState(null);
   const [threats, setThreats] = useState([]);
 
   useEffect(() => {
     // Fetch recent threats
     axios.get("http://localhost:8000/api/threats?limit=5")
       .then((res) => setThreats(res.data))
-      .catch((err) => console.debug("Offline API mock"));
+      .catch(() => {});
+
+    // Fetch real summary stats
+    axios.get("http://localhost:8000/api/metrics/summary")
+      .then((res) => setStats(res.data))
+      .catch(() => {});
   }, [liveAlerts]);
 
   return (
@@ -38,8 +37,10 @@ function Overview({ liveAlerts }) {
             <AlertOctagon size={24} />
           </div>
           <div>
-            <div style={{ color: "#9ca3af", fontSize: "14px" }}>TOTAL DETECTED</div>
-            <div style={{ fontSize: "28px", fontWeight: "bold", margin: "4px 0" }}>{stats.total_threats}</div>
+            <div style={{ color: "#9ca3af", fontSize: "14px" }}>TOTAL EVENTS</div>
+            <div style={{ fontSize: "28px", fontWeight: "bold", margin: "4px 0" }}>
+              {stats ? stats.total_events_processed.toLocaleString() : "—"}
+            </div>
           </div>
         </div>
 
@@ -48,8 +49,10 @@ function Overview({ liveAlerts }) {
             <Shield size={24} />
           </div>
           <div>
-            <div style={{ color: "#9ca3af", fontSize: "14px" }}>ACTIVE FIREWALL RULES</div>
-            <div style={{ fontSize: "28px", fontWeight: "bold", margin: "4px 0" }}>{stats.active_blocks}</div>
+            <div style={{ color: "#9ca3af", fontSize: "14px" }}>FALSE POSITIVE RATE</div>
+            <div style={{ fontSize: "28px", fontWeight: "bold", margin: "4px 0" }}>
+              {stats ? `${(stats.avg_fpr * 100).toFixed(3)}%` : "—"}
+            </div>
           </div>
         </div>
 
@@ -59,7 +62,9 @@ function Overview({ liveAlerts }) {
           </div>
           <div>
             <div style={{ color: "#9ca3af", fontSize: "14px" }}>p50 BRAIN LATENCY</div>
-            <div style={{ fontSize: "28px", fontWeight: "bold", margin: "4px 0" }}>{stats.p50_latency}</div>
+            <div style={{ fontSize: "28px", fontWeight: "bold", margin: "4px 0" }}>
+              {stats ? `${stats.p50_latency_ms.toFixed(1)} ms` : "—"}
+            </div>
           </div>
         </div>
 
@@ -68,8 +73,10 @@ function Overview({ liveAlerts }) {
             <Wifi size={24} />
           </div>
           <div>
-            <div style={{ color: "#9ca3af", fontSize: "14px" }}>p99 BRAIN LATENCY</div>
-            <div style={{ fontSize: "28px", fontWeight: "bold", margin: "4px 0" }}>{stats.p99_latency}</div>
+            <div style={{ color: "#9ca3af", fontSize: "14px" }}>THROUGHPUT</div>
+            <div style={{ fontSize: "28px", fontWeight: "bold", margin: "4px 0" }}>
+              {stats ? `${stats.avg_throughput_pps.toFixed(0)} pps` : "—"}
+            </div>
           </div>
         </div>
       </div>
@@ -82,32 +89,38 @@ function Overview({ liveAlerts }) {
         padding: "24px"
       }}>
         <h3 style={{ fontSize: "20px", fontWeight: "bold", margin: "0 0 20px 0" }}>Recent Intrusion Alerts</h3>
-        <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid #1f2937", color: "#6b7280" }}>
-              <th style={{ padding: "12px 16px" }}>TIMESTAMP</th>
-              <th style={{ padding: "12px 16px" }}>SOURCE IP</th>
-              <th style={{ padding: "12px 16px" }}>ATTACK CLASS</th>
-              <th style={{ padding: "12px 16px" }}>CONFIDENCE</th>
-              <th style={{ padding: "12px 16px" }}>SNN Z-SCORE</th>
-              <th style={{ padding: "12px 16px" }}>ACTION</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(threats.length > 0 ? threats : sampleThreats).map((threat, idx) => (
-              <tr key={idx} style={{ borderBottom: "1px solid #1f2937", color: "#d1d5db" }}>
-                <td style={{ padding: "16px" }}>{new Date(threat.timestamp || Date.now()).toLocaleTimeString()}</td>
-                <td style={{ padding: "16px", fontWeight: "bold" }}>{threat.src_ip}</td>
-                <td style={{ padding: "16px" }}>
-                  <span style={badgeStyle(threat.attack_class)}>{threat.attack_class}</span>
-                </td>
-                <td style={{ padding: "16px" }}>{(threat.confidence * 100).toFixed(1)}%</td>
-                <td style={{ padding: "16px" }}>{threat.z_score.toFixed(2)}</td>
-                <td style={{ padding: "16px", color: "#ef4444", fontWeight: "bold" }}>{threat.action_taken}</td>
+        {threats.length === 0 ? (
+          <div style={{ color: "#6b7280", textAlign: "center", padding: "40px" }}>
+            No threat events recorded yet. The SNN is learning...
+          </div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid #1f2937", color: "#6b7280" }}>
+                <th style={{ padding: "12px 16px" }}>TIMESTAMP</th>
+                <th style={{ padding: "12px 16px" }}>SOURCE IP</th>
+                <th style={{ padding: "12px 16px" }}>ATTACK CLASS</th>
+                <th style={{ padding: "12px 16px" }}>CONFIDENCE</th>
+                <th style={{ padding: "12px 16px" }}>SNN Z-SCORE</th>
+                <th style={{ padding: "12px 16px" }}>ACTION</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {threats.map((threat, idx) => (
+                <tr key={idx} style={{ borderBottom: "1px solid #1f2937", color: "#d1d5db" }}>
+                  <td style={{ padding: "16px" }}>{new Date(threat.timestamp || Date.now()).toLocaleTimeString()}</td>
+                  <td style={{ padding: "16px", fontWeight: "bold" }}>{threat.src_ip}</td>
+                  <td style={{ padding: "16px" }}>
+                    <span style={badgeStyle(threat.attack_class)}>{threat.attack_class}</span>
+                  </td>
+                  <td style={{ padding: "16px" }}>{(threat.confidence * 100).toFixed(1)}%</td>
+                  <td style={{ padding: "16px" }}>{threat.z_score.toFixed(2)}</td>
+                  <td style={{ padding: "16px", color: "#ef4444", fontWeight: "bold" }}>{threat.action_taken}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
@@ -141,6 +154,10 @@ const badgeStyle = (cls) => {
     DDoS: { bg: "#fff5f5", text: "#c53030" },
     PortScan: { bg: "#fffbeb", text: "#92400e" },
     BruteForce: { bg: "#f3e8ff", text: "#6b21a8" },
+    WebAttack: { bg: "#fff7ed", text: "#9a3412" },
+    Infiltration: { bg: "#fdf4ff", text: "#86198f" },
+    Botnet: { bg: "#f0fdf4", text: "#166534" },
+    ZeroDay: { bg: "#fef2f2", text: "#dc2626" },
   };
   const val = colors[cls] || { bg: "#eff6ff", text: "#1e40af" };
   return {
@@ -152,11 +169,5 @@ const badgeStyle = (cls) => {
     color: val.text
   };
 };
-
-const sampleThreats = [
-  { timestamp: new Date().toISOString(), src_ip: "10.0.0.1", attack_class: "PortScan", confidence: 0.985, z_score: 5.4, action_taken: "TEMP_BLOCK" },
-  { timestamp: new Date().toISOString(), src_ip: "185.12.5.4", attack_class: "DoS", confidence: 0.992, z_score: 11.2, action_taken: "HARD_BLOCK" },
-  { timestamp: new Date().toISOString(), src_ip: "192.168.1.12", attack_class: "BENIGN", confidence: 1.0, z_score: 1.1, action_taken: "ALLOW" },
-];
 
 export default Overview;

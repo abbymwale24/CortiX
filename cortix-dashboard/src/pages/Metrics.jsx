@@ -8,7 +8,7 @@ function Metrics() {
   useEffect(() => {
     axios.get("http://localhost:8000/api/metrics")
       .then((res) => setMetrics(res.data))
-      .catch((err) => console.debug("Offline API mock"));
+      .catch(() => {});
   }, []);
 
   return (
@@ -25,29 +25,27 @@ function Metrics() {
         padding: "24px"
       }}>
         <h3 style={{ fontSize: "20px", fontWeight: "bold", margin: "0 0 20px 0" }}>Processing Latency over Time (ms)</h3>
-        <div style={{ width: "100%", height: 350 }}>
-          <ResponsiveContainer>
-            <LineChart data={metrics.length > 0 ? metrics : sampleMetrics}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-              <XAxis dataKey="timestamp" stroke="#9ca3af" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} />
-              <YAxis stroke="#9ca3af" />
-              <Tooltip contentStyle={{ backgroundColor: "#11141e", borderColor: "#374151" }} />
-              <Line type="monotone" dataKey="latency_p50_ms" stroke="#3b82f6" strokeWidth={3} name="p50 Latency" dot={false} />
-              <Line type="monotone" dataKey="latency_p99_ms" stroke="#ef4444" strokeWidth={2} name="p99 Latency" dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+        {metrics.length === 0 ? (
+          <div style={{ color: "#6b7280", textAlign: "center", padding: "40px" }}>
+            Waiting for metrics data... Start the daemon to begin collecting performance telemetry.
+          </div>
+        ) : (
+          <div style={{ width: "100%", height: 350 }}>
+            <ResponsiveContainer>
+              <LineChart data={metrics}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="timestamp" stroke="#9ca3af" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} />
+                <YAxis stroke="#9ca3af" />
+                <Tooltip contentStyle={{ backgroundColor: "#11141e", borderColor: "#374151" }} />
+                <Line type="monotone" dataKey="latency_p50_ms" stroke="#3b82f6" strokeWidth={3} name="p50 Latency" dot={false} />
+                <Line type="monotone" dataKey="latency_p99_ms" stroke="#ef4444" strokeWidth={2} name="p99 Latency" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </div>
     </div>
   );
 }
-
-const sampleMetrics = [
-  { timestamp: new Date(Date.now() - 50000).toISOString(), latency_p50_ms: 4.1, latency_p99_ms: 12.2, fpr: 0.002 },
-  { timestamp: new Date(Date.now() - 40000).toISOString(), latency_p50_ms: 4.3, latency_p99_ms: 12.5, fpr: 0.002 },
-  { timestamp: new Date(Date.now() - 30000).toISOString(), latency_p50_ms: 4.2, latency_p99_ms: 12.1, fpr: 0.002 },
-  { timestamp: new Date(Date.now() - 20000).toISOString(), latency_p50_ms: 4.5, latency_p99_ms: 14.8, fpr: 0.002 },
-  { timestamp: new Date(Date.now() - 10000).toISOString(), latency_p50_ms: 4.2, latency_p99_ms: 12.8, fpr: 0.002 },
-];
 
 export default Metrics;

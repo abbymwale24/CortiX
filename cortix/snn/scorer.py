@@ -51,6 +51,7 @@ class AnomalyScorer:
         self,
         activation_magnitude: float,
         context_key: Optional[str] = None,
+        update_baseline: bool = True,
     ) -> dict:
         """
         Compute anomaly z-score for an activation magnitude.
@@ -58,15 +59,17 @@ class AnomalyScorer:
         Args:
             activation_magnitude: The ensemble consensus score.
             context_key: Optional context identifier (subnet, protocol).
+            update_baseline: If True, add to sliding window.
 
         Returns:
             dict with z_score, is_anomaly, threshold, median, mad
         """
-        # Update window
-        self._global_window.append(activation_magnitude)
+        if update_baseline:
+            self._global_window.append(activation_magnitude)
+            if context_key:
+                self._context_windows[context_key].append(activation_magnitude)
 
         if context_key:
-            self._context_windows[context_key].append(activation_magnitude)
             window = self._context_windows[context_key]
         else:
             window = self._global_window
@@ -84,19 +87,27 @@ class AnomalyScorer:
 
         window_arr = np.array(window)
         median_val = np.median(window_arr)
-        mad = np.median(np.abs(window_arr - median_val))
+        
+        # Calculate percentage deviation from the median baseline
+        # (e.g., if act_mag is 50 and median is 100, deviation is -50%)
+        if median_val > 0:
+            deviation_pct = (activation_magnitude - median_val) / median_val
+        else:
+            deviation_pct = 0.0
 
-        # Robust z-score
-        z = (activation_magnitude - median_val) / (mad + self.epsilon)
+        # Z-score metric repurposed to represent percentage deviation for compatibility
+        z = deviation_pct * 100.0  
 
-        is_anomaly = z >= self.z_threshold
+        # Anomaly if activation drops below a certain threshold (e.g., -25% -> falls below 75% of normal)
+        # z_threshold of 25.0 means an anomaly is flagged if activation is < 75% of median
+        is_anomaly = z < -self.z_threshold
 
         return {
             "z_score": float(z),
             "is_anomaly": bool(is_anomaly),
             "threshold": self.z_threshold,
             "median": float(median_val),
-            "mad": float(mad),
+            "mad": 0.0,
             "warming_up": False,
         }
 

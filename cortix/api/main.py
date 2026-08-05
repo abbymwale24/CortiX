@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 
 from cortix.config import config
 from cortix.database import init_db
-from cortix.api.routes import threats, metrics, containment, attackers
+from cortix.api.routes import threats, metrics, containment, attackers, brain
 from cortix.api.websocket import manager
 
 logging.basicConfig(level=logging.INFO)
@@ -76,6 +76,7 @@ app.include_router(threats.router, prefix="/api")
 app.include_router(metrics.router, prefix="/api")
 app.include_router(containment.router, prefix="/api")
 app.include_router(attackers.router, prefix="/api")
+app.include_router(brain.router, prefix="/api")
 
 
 @app.get("/api/health")
