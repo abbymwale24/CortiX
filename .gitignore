@@ -65,3 +65,11 @@ Thumbs.db
 *.db
 /datasets/
 # (If datasets contain large network capture files, they should not be uploaded)
+
+# CortiX-specific
+data/cicids2017/
+data/cicids2017_merged.csv
+evaluation/results/
+models/
+.pytest_cache/
+cortix.db

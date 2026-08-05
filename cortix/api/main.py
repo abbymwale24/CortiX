@@ -21,14 +21,38 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cortix.api.main")
 
 
+from cortix.redis_bus import get_bus, CHANNEL_LIVE_EVENTS
+import json
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup Phase
     logger.info("Initializing CortiX database session engines")
     init_db()
+
+    # Bridge Redis pub/sub to FastAPI WebSocket connection manager
+    loop = asyncio.get_running_loop()
+    bus = get_bus()
+
+    def redis_callback(data: dict):
+        asyncio.run_coroutine_threadsafe(
+            manager.broadcast(json.dumps(data)),
+            loop
+        )
+
+    if bus.is_connected:
+        bus.subscribe(CHANNEL_LIVE_EVENTS, redis_callback)
+        bus.start_listening()
+        logger.info("Subscribed API WebSockets to Redis live events stream")
+    else:
+        logger.warning("Redis bus is not connected. API starting in offline/mock mode.")
+
     yield
     # Shutdown Phase
     logger.info("Shutting down API server")
+    if bus.is_connected:
+        bus.disconnect()
+
 
 
 app = FastAPI(

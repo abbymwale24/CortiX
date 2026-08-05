@@ -1,30 +1,107 @@
-import React, { useState, useEffect } from "react";
-import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
-import { Shield, AlertTriangle, Users, BarChart3, Settings, ShieldAlert, Activity } from "lucide-react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
+import { Shield, AlertTriangle, Users, BarChart3, ShieldAlert, Activity } from "lucide-react";
+import axios from "axios";
 import Overview from "./pages/Overview";
 import Threats from "./pages/Threats";
 import Attackers from "./pages/Attackers";
 import Metrics from "./pages/Metrics";
 import Containment from "./pages/Containment";
 
+const API_BASE = "http://localhost:8000";
+const WS_URL = "ws://localhost:8000/ws/live";
+const MAX_RECONNECT_DELAY = 30000; // 30 seconds max backoff
+
 function App() {
   const [liveAlerts, setLiveAlerts] = useState([]);
+  const [wsStatus, setWsStatus] = useState("disconnected"); // "connected" | "reconnecting" | "disconnected"
+  const [systemStats, setSystemStats] = useState({
+    fpr: 0.0,
+    p50_latency_ms: 0.0,
+    total_events_processed: 0,
+  });
+
+  const wsRef = useRef(null);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef(null);
+
+  // ── WebSocket with exponential backoff reconnection ──
+
+  const connectWebSocket = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+
+    try {
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsStatus("connected");
+        reconnectAttemptRef.current = 0;
+        console.log("[CortiX WS] Connected to live event stream");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.event === "THREAT_ALERT") {
+            setLiveAlerts((prev) => [data, ...prev].slice(0, 50));
+          }
+        } catch (err) {
+          console.debug("[CortiX WS] Parse error:", err);
+        }
+      };
+
+      ws.onclose = (event) => {
+        setWsStatus("reconnecting");
+        const attempt = reconnectAttemptRef.current;
+        const delay = Math.min(1000 * Math.pow(2, attempt), MAX_RECONNECT_DELAY);
+        console.log(`[CortiX WS] Disconnected. Reconnecting in ${delay / 1000}s (attempt ${attempt + 1})`);
+
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectAttemptRef.current += 1;
+          connectWebSocket();
+        }, delay);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    } catch (err) {
+      setWsStatus("disconnected");
+      console.debug("[CortiX WS] Connection failed:", err);
+    }
+  }, []);
+
+  // ── Fetch system metrics summary ──
+
+  const fetchSystemStats = useCallback(() => {
+    axios.get(`${API_BASE}/api/metrics/summary`)
+      .then((res) => setSystemStats(res.data))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
-    // Connect to FastAPI live WebSocket stream
-    const ws = new WebSocket("ws://localhost:8000/ws/live");
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.event === "THREAT_ALERT") {
-          setLiveAlerts((prev) => [data, ...prev].slice(0, 10));
-        }
-      } catch (err) {
-        console.error("Failed to parse websocket update:", err);
-      }
+    connectWebSocket();
+    fetchSystemStats();
+
+    // Poll metrics every 15 seconds
+    const metricsInterval = setInterval(fetchSystemStats, 15000);
+
+    return () => {
+      clearInterval(metricsInterval);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (wsRef.current) wsRef.current.close();
     };
-    return () => ws.close();
-  }, []);
+  }, [connectWebSocket, fetchSystemStats]);
+
+  // ── Connection status indicator ──
+
+  const statusConfig = {
+    connected: { color: "#10b981", glow: "#10b981", label: "SYSTEM ACTIVE" },
+    reconnecting: { color: "#f59e0b", glow: "#f59e0b", label: "RECONNECTING..." },
+    disconnected: { color: "#ef4444", glow: "#ef4444", label: "OFFLINE" },
+  };
+  const status = statusConfig[wsStatus];
 
   return (
     <Router>
@@ -55,21 +132,15 @@ function App() {
               <ShieldAlert size={28} color="#ffffff" />
             </div>
             <div>
-              <h1 style={{ fontSize: "22px", fontWeight: "bold", margin: 0, tracking: "0.05em", color: "#ffffff" }}>CORTIX</h1>
+              <h1 style={{ fontSize: "22px", fontWeight: "bold", margin: 0, letterSpacing: "0.05em", color: "#ffffff" }}>CORTIX</h1>
               <span style={{ fontSize: "11px", color: "#6b7280", letterSpacing: "1px" }}>NEURO DEFENDER</span>
             </div>
           </div>
 
           {/* Nav List */}
-          <nav style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
-            <Link to="/" style={navItemStyle}><Shield size={20} /> Overview</Link>
-            <Link to="/threats" style={navItemStyle}><AlertTriangle size={20} /> Threat Feed</Link>
-            <Link to="/attackers" style={navItemStyle}><Users size={20} /> Attacker Maps</Link>
-            <Link to="/metrics" style={navItemStyle}><BarChart3 size={20} /> Brain Metrics</Link>
-            <Link to="/containment" style={navItemStyle}><Activity size={20} /> Firewall Rules</Link>
-          </nav>
+          <NavLinks />
 
-          {/* Footer stats badge */}
+          {/* Footer stats badge with live connection status */}
           <div style={{
             marginTop: "auto",
             backgroundColor: "#161b26",
@@ -84,12 +155,15 @@ function App() {
               width: "12px",
               height: "12px",
               borderRadius: "50%",
-              backgroundColor: "#10b981",
-              boxShadow: "0 0 8px #10b981"
+              backgroundColor: status.color,
+              boxShadow: `0 0 8px ${status.glow}`,
+              animation: wsStatus === "reconnecting" ? "pulse 1.5s infinite" : "none",
             }} />
             <div>
-              <div style={{ fontSize: "12px", fontWeight: "bold" }}>SYSTEM ACTIVE</div>
-              <div style={{ fontSize: "10px", color: "#6b7280" }}>FPR: 0.02% | p50: 4.2ms</div>
+              <div style={{ fontSize: "12px", fontWeight: "bold" }}>{status.label}</div>
+              <div style={{ fontSize: "10px", color: "#6b7280" }}>
+                FPR: {(systemStats.avg_fpr * 100 || 0).toFixed(2)}% | p50: {(systemStats.p50_latency_ms || 0).toFixed(1)}ms
+              </div>
             </div>
           </div>
         </aside>
@@ -105,7 +179,54 @@ function App() {
           </Routes>
         </main>
       </div>
+
+      {/* Pulse animation for reconnecting indicator */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
     </Router>
+  );
+}
+
+/**
+ * Navigation links with active route highlighting.
+ */
+function NavLinks() {
+  const location = useLocation();
+
+  const links = [
+    { to: "/", label: "Overview", icon: <Shield size={20} /> },
+    { to: "/threats", label: "Threat Feed", icon: <AlertTriangle size={20} /> },
+    { to: "/attackers", label: "Attacker Maps", icon: <Users size={20} /> },
+    { to: "/metrics", label: "Brain Metrics", icon: <BarChart3 size={20} /> },
+    { to: "/containment", label: "Firewall Rules", icon: <Activity size={20} /> },
+  ];
+
+  return (
+    <nav style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
+      {links.map((link) => {
+        const isActive = location.pathname === link.to ||
+          (link.to !== "/" && location.pathname.startsWith(link.to));
+
+        return (
+          <Link
+            key={link.to}
+            to={link.to}
+            style={{
+              ...navItemStyle,
+              backgroundColor: isActive ? "#1e293b" : "transparent",
+              color: isActive ? "#ffffff" : "#9ca3af",
+              borderLeft: isActive ? "3px solid #ef4444" : "3px solid transparent",
+            }}
+          >
+            {link.icon} {link.label}
+          </Link>
+        );
+      })}
+    </nav>
   );
 }
 
@@ -115,14 +236,10 @@ const navItemStyle = {
   gap: "12px",
   padding: "12px 16px",
   borderRadius: "8px",
-  color: "#9ca3af",
   textDecoration: "none",
   fontWeight: "500",
   transition: "all 0.2s ease-in-out",
-  ":hover": {
-    backgroundColor: "#1e293b",
-    color: "#ffffff"
-  }
 };
 
 export default App;
+
