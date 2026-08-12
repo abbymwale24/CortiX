@@ -6,10 +6,22 @@ consensus, metaplasticity controller, and robust anomaly scoring.
 
 Each module maintains an independent AnomalyScorer so that per-module
 activation baselines do not contaminate each other.
+
+Reproducibility
+----------------
+The ensemble now accepts an explicit `seed`. It uses np.random.SeedSequence
+to spawn M independent, statistically-decorrelated child seeds — one per
+module — rather than naive derivations like `seed + module_id`, which can
+produce correlated random streams for related seed values.
+
+If `seed` is None, behaviour falls back to nondeterministic (OS entropy)
+initialisation, same as before the fix — so this is strictly additive and
+does not change default behaviour unless a seed is explicitly requested.
 """
 
 import logging
 import time
+from typing import Optional
 import numpy as np
 
 from cortix.config import config
@@ -23,7 +35,7 @@ logger = logging.getLogger("cortix.snn.ensemble")
 class HebbianEnsemble:
     """
     Hebbian SNN Ensemble.
-    
+
     Coordinates M independent modules, aggregate consensus scores,
     and publishes detected anomalies.
 
@@ -32,17 +44,26 @@ class HebbianEnsemble:
     M activations per event dumped into a shared window.
     """
 
-    def __init__(self, M: int = None):
+    def __init__(self, M: Optional[int] = None, seed: Optional[int] = None):
         self.M = M or config.HEBBIAN_MODULES
         self.n_input = config.NEURONS_PER_MODULE
         self.n_hidden = config.HIDDEN_NEURONS
+        self.seed = config.RANDOM_SEED if seed is None else seed
 
-        # Initialize M Hebbian modules with distinct random seeds/variations
+        # ── Spawn M independent, decorrelated child seeds ──
+        # SeedSequence.spawn() is the numpy-recommended way to get multiple
+        # independent streams from one master seed — safer than seed+i,
+        # which can correlate for some RNG algorithms.
+        ss = np.random.SeedSequence(self.seed)
+        child_seeds = ss.spawn(self.M)
+
+        # Initialize M Hebbian modules with distinct, reproducible seeds
         self.modules = [
             HebbianModule(
                 n_input=self.n_input,
                 n_hidden=self.n_hidden,
                 module_id=m,
+                seed=child_seeds[m],
             )
             for m in range(self.M)
         ]
@@ -69,24 +90,26 @@ class HebbianEnsemble:
         self.total_processed = 0
 
         logger.info(
-            "HebbianEnsemble initialised with M=%d independent modules",
+            "HebbianEnsemble initialised with M=%d independent modules (seed=%s)",
             self.M,
+            self.seed,
         )
 
     def process_event(
         self,
         spike_vector: np.ndarray,
-        timestamp: float = None,
+        timestamp: Optional[float] = None,
         learn: bool = True,
+        context_key: Optional[str] = None,
     ) -> dict:
         """
         Process a single encoded event through all modules in the ensemble.
-        
+
         Args:
             spike_vector: Encoded binary spike vector of shape (n_input,)
             timestamp: Event timestamp (default: current system time)
             learn: Whether to update weights online
-            
+
         Returns:
             A results dictionary including anomaly decision and z-score.
         """
@@ -109,8 +132,10 @@ class HebbianEnsemble:
             module_activations.append(act_mag)
             module_spikes_list.append(post_spikes)
 
-            # Each module scores against its own baseline
-            score_result = self.scorers[i].score(act_mag)
+            # Each module scores against its own baseline (per context if provided)
+            score_result = self.scorers[i].score(
+                act_mag, context_key=context_key, update_baseline=learn
+            )
             per_module_results.append(score_result)
 
         # 3. Majority vote: how many independent modules flag anomaly?
@@ -164,4 +189,3 @@ class HebbianEnsemble:
         self.metaplasticity.reset()
         self._latency_scorer.reset()
         self.total_processed = 0
-

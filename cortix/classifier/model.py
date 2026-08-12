@@ -47,11 +47,11 @@ class CortixLSTMCNN(nn.Module):
     Expected input tensor: (batch_size, seq_len=10, num_features=40)
     """
 
-    def __init__(self, num_classes: int = None):
+    def __init__(self, num_classes: int | None = None, num_features: int | None = None):
         super().__init__()
         self.num_classes = num_classes or config.CLASSIFIER_NUM_CLASSES
         self.seq_len = config.CLASSIFIER_SEQ_LEN
-        self.num_features = config.CLASSIFIER_NUM_FEATURES
+        self.num_features = num_features or config.CLASSIFIER_NUM_FEATURES
 
         # CNN feature extractor (acts along the sequence features)
         # Input shape: (batch_size, num_features, seq_len)

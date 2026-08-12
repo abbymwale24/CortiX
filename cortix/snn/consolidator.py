@@ -64,7 +64,8 @@ class PrototypeConsolidator:
                 
                 # Re-initialise dead neurons with random, normalized weights
                 for idx in dead_idx:
-                    W[idx] = np.random.uniform(0.1, 0.5, self.n_input).astype(np.float32)
+                    rng = getattr(module, "rng", np.random)
+                    W[idx] = rng.uniform(0.1, 0.5, self.n_input).astype(np.float32)
                     W[idx] /= np.sum(W[idx]) + 1e-8
 
             # 2. Clustering & Consolidation
@@ -103,6 +104,6 @@ class PrototypeConsolidator:
 
         return {
             "pruned_synapses": int(total_pruned_synapses),
-            "recovered_neurons": int(total_reset_neurons),
+            "recovered_neurons": total_reset_neurons,
             "modules_cleaned": len(self.ensemble.modules),
         }

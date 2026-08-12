@@ -23,21 +23,27 @@ logger = logging.getLogger("cortix.classifier.train")
 
 def train_model(
     csv_path: str,
-    epochs: int = None,
-    batch_size: int = None,
-    lr: float = None,
-    weight_decay: float = None,
-    device: str = None,
+    epochs: int | None = None,
+    batch_size: int | None = None,
+    lr: float | None = None,
+    weight_decay: float | None = None,
+    device: str | None = None,
+    model_path: str | None = None,
 ):
     epochs = epochs or config.CLASSIFIER_EPOCHS
     batch_size = batch_size or config.CLASSIFIER_BATCH_SIZE
     lr = lr or config.CLASSIFIER_LR
     weight_decay = weight_decay or config.CLASSIFIER_WEIGHT_DECAY
     
+    if model_path is None:
+        save_path = config.MODEL_PATH_NSLKDD if "nslkdd" in csv_path.lower() else config.MODEL_PATH_CICIDS2017
+    else:
+        save_path = model_path
+    
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    logger.info("Using device: %s", device)
+    logger.info("Using device: %s | Target model checkpoint: %s", device, save_path)
 
     # 1. Load Data
     train_loader, val_loader, test_loader, encoder, _ = prepare_datasets(
@@ -47,10 +53,11 @@ def train_model(
     )
 
     num_classes = len(encoder.classes_)
-    logger.info("Number of classes detected: %d (%s)", num_classes, encoder.classes_)
+    num_features = getattr(train_loader.dataset, "X", torch.empty((0, config.CLASSIFIER_NUM_FEATURES))).shape[1]
+    logger.info("Dataset specs: %d features, %d classes (%s)", num_features, num_classes, encoder.classes_)
 
     # 2. Build Model
-    model = CortixLSTMCNN(num_classes=num_classes).to(device)
+    model = CortixLSTMCNN(num_classes=num_classes, num_features=num_features).to(device)
 
     # Handle Class Imbalance via Weighted CrossEntropy
     # Count frequencies of each class in training loader
@@ -134,16 +141,16 @@ def train_model(
             best_val_loss = val_loss
             patience_counter = 0
             # Save the best model parameters
-            os.makedirs(os.path.dirname(config.MODEL_PATH), exist_ok=True)
-            torch.save(model.state_dict(), config.MODEL_PATH)
-            logger.info("Saved best model checkpoint to %s", config.MODEL_PATH)
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            torch.save(model.state_dict(), save_path)
+            logger.info("Saved best model checkpoint to %s", save_path)
         else:
             patience_counter += 1
             if patience_counter >= patience:
                 logger.info("Early stopping triggered after %d epochs", epoch)
                 break
 
-    logger.info("Training complete.")
+    logger.info("Training complete. Best model checkpoint at: %s", save_path)
 
 
 if __name__ == "__main__":
@@ -151,5 +158,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset", type=str, required=True, help="Path to cleaned dataset CSV"
     )
+    parser.add_argument(
+        "--model_path", type=str, default=None, help="Target model checkpoint path (.pt)"
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=None, help="Number of training epochs"
+    )
     args = parser.parse_args()
-    train_model(csv_path=args.dataset)
+    train_model(csv_path=args.dataset, model_path=args.model_path, epochs=args.epochs)

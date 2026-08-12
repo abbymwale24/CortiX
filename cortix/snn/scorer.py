@@ -16,6 +16,31 @@ from cortix.config import config
 logger = logging.getLogger("cortix.snn.scorer")
 
 
+class WindowBuffer:
+    """Pre-allocated ring buffer for zero-allocation window statistics."""
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.buf = np.empty(capacity, dtype=np.float32)
+        self.ptr = 0
+        self.size = 0
+
+    def append(self, val: float):
+        self.buf[self.ptr] = val
+        self.ptr = (self.ptr + 1) % self.capacity
+        if self.size < self.capacity:
+            self.size += 1
+
+    def get_view(self) -> np.ndarray:
+        return self.buf[:self.size]
+
+    def __len__(self) -> int:
+        return self.size
+
+    def clear(self):
+        self.ptr = 0
+        self.size = 0
+
+
 class AnomalyScorer:
     """
     MAD-based robust z-score anomaly scorer.
@@ -28,8 +53,8 @@ class AnomalyScorer:
 
     def __init__(
         self,
-        window_size: int = None,
-        z_threshold: float = None,
+        window_size: Optional[int] = None,
+        z_threshold: Optional[float] = None,
         epsilon: float = 1e-6,
     ):
         self.window_size = window_size or config.SLIDING_WINDOW_SIZE
@@ -37,11 +62,11 @@ class AnomalyScorer:
         self.epsilon = epsilon
 
         # Global baseline window
-        self._global_window: deque = deque(maxlen=self.window_size)
+        self._global_window = WindowBuffer(capacity=self.window_size)
 
         # Per-context baselines (e.g., per subnet, per protocol)
-        self._context_windows: dict = defaultdict(
-            lambda: deque(maxlen=self.window_size)
+        self._context_windows: dict[str, WindowBuffer] = defaultdict(
+            lambda: WindowBuffer(capacity=self.window_size)
         )
 
         # Latency tracking
@@ -69,7 +94,7 @@ class AnomalyScorer:
             if context_key:
                 self._context_windows[context_key].append(activation_magnitude)
 
-        if context_key:
+        if context_key and len(self._context_windows[context_key]) >= 20:
             window = self._context_windows[context_key]
         else:
             window = self._global_window
@@ -85,34 +110,33 @@ class AnomalyScorer:
                 "warming_up": True,
             }
 
-        window_arr = np.array(window)
-        median_val = np.median(window_arr)
-        
-        # Calculate percentage deviation from the median baseline
-        # (e.g., if act_mag is 50 and median is 100, deviation is -50%)
-        if median_val > 0:
-            deviation_pct = (activation_magnitude - median_val) / median_val
-        else:
-            deviation_pct = 0.0
+        window_arr = window.get_view()
+        median_val = float(np.median(window_arr))
+        mad_val = float(np.median(np.abs(window_arr - median_val)))
 
-        # Z-score metric repurposed to represent percentage deviation for compatibility
-        z = deviation_pct * 100.0  
+        # Standard deviation scale estimate from MAD (sigma ≈ 1.4826 * MAD)
+        scale = 1.4826 * mad_val
+        if scale < 1e-4:
+            scale = 1e-4
 
-        # Anomaly if activation drops below a certain threshold (e.g., -25% -> falls below 75% of normal)
-        # z_threshold of 25.0 means an anomaly is flagged if activation is < 75% of median
-        is_anomaly = z < -self.z_threshold
+        # Robust MAD z-score
+        z = (activation_magnitude - median_val) / scale
+
+        # One-tailed anomaly check: attacks produce HIGHER composite scores
+        # than benign traffic (magnitude spike only, not drop).
+        is_anomaly = z > self.z_threshold
 
         return {
-            "z_score": float(z),
-            "is_anomaly": bool(is_anomaly),
+            "z_score": z,
+            "is_anomaly": is_anomaly,
             "threshold": self.z_threshold,
-            "median": float(median_val),
-            "mad": 0.0,
+            "median": median_val,
+            "mad": mad_val,
             "warming_up": False,
         }
 
     def majority_vote(
-        self, module_scores: list[float], threshold: float = None
+        self, module_scores: list[float], threshold: Optional[float] = None
     ) -> dict:
         """
         Ensemble consensus: majority of modules must flag anomaly.
@@ -171,3 +195,4 @@ class AnomalyScorer:
         self._global_window.clear()
         self._context_windows.clear()
         self._latencies.clear()
+

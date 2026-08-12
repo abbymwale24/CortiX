@@ -111,15 +111,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.dataset == "nslkdd":
-        # Load train set (benign only for warmup)
-        train_features, train_labels, _ = load_nslkdd_dataset(test_path="data/nslkdd_train.csv")
-        benign_train = train_features[train_labels == 0]
-        # We don't need all 13k benign samples for tuning speed, let's take a subset
-        benign_train = benign_train[:1000] 
-        
-        # Load test set (mix of benign and attacks)
-        test_features, test_labels, _ = load_nslkdd_dataset(test_path="data/nslkdd_test.csv")
-        # Subsample test set for faster grid search
+        nsl_data = load_nslkdd_dataset()
+        train_features = nsl_data["X_train"]
+        train_labels = nsl_data["y_train"]
+        benign_train = train_features[train_labels == 0][:1000]
+
+        test_features = nsl_data["X_test"]
+        test_labels = nsl_data["y_test"]
         np.random.seed(42)
         idx = np.random.choice(len(test_features), 2000, replace=False)
         test_features = test_features[idx]

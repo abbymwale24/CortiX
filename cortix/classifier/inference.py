@@ -26,7 +26,7 @@ class ClassifierInference:
     temporal sequences of shape (10, 40) for realtime classification.
     """
 
-    def __init__(self, model_path: str = None, device: str = None):
+    def __init__(self, model_path: str | None = None, device: str | None = None):
         self.model_path = model_path or config.MODEL_PATH
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.seq_len = config.CLASSIFIER_SEQ_LEN
@@ -62,12 +62,16 @@ class ClassifierInference:
                 logger.warning("No label encoder found at %s.", encoder_path)
 
             if os.path.exists(self.model_path):
-                num_classes = len(self.encoder.classes_) if self.encoder else config.CLASSIFIER_NUM_CLASSES
+                ckpt = torch.load(self.model_path, map_location=torch.device(self.device))
+                if isinstance(ckpt, dict) and "fc2.bias" in ckpt:
+                    num_classes = ckpt["fc2.bias"].shape[0]
+                elif self.encoder:
+                    num_classes = len(self.encoder.classes_)
+                else:
+                    num_classes = config.CLASSIFIER_NUM_CLASSES
+
                 self.model = CortixLSTMCNN(num_classes=num_classes)
-                # Load state dict map to cpu/device
-                self.model.load_state_dict(
-                    torch.load(self.model_path, map_location=torch.device(self.device))
-                )
+                self.model.load_state_dict(ckpt)
                 self.model.to(self.device)
                 self.model.eval()
                 logger.info("Pretrained LSTM-CNN loaded onto %s", self.device)

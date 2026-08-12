@@ -283,6 +283,18 @@ class TestHebbianModule:
         np.testing.assert_array_equal(module.pre_times, np.zeros(32))
         np.testing.assert_array_equal(module.post_times, np.zeros(16))
 
+    def test_seeded_rng_reproducibility(self):
+        """HebbianModules initialized with the same seed must have identical initial weights."""
+        m1 = HebbianModule(n_input=32, n_hidden=16, module_id=0, seed=1234)
+        m2 = HebbianModule(n_input=32, n_hidden=16, module_id=0, seed=1234)
+        np.testing.assert_array_equal(m1.W, m2.W)
+
+    def test_different_seeds_produce_different_weights(self):
+        """HebbianModules initialized with different seeds/module_ids must produce different weights."""
+        m1 = HebbianModule(n_input=32, n_hidden=16, module_id=0)
+        m2 = HebbianModule(n_input=32, n_hidden=16, module_id=1)
+        assert not np.array_equal(m1.W, m2.W)
+
 
 # ──────────────────────────────────────────────
 # Anomaly Scorer
@@ -535,6 +547,13 @@ class TestHebbianEnsemble:
 
         ensemble.reset()
         assert ensemble.total_processed == 0
+
+    def test_ensemble_seed_reproducibility(self):
+        """Ensembles with the same seed must produce identical weights across all modules."""
+        e1 = HebbianEnsemble(M=3, seed=42)
+        e2 = HebbianEnsemble(M=3, seed=42)
+        for m1, m2 in zip(e1.modules, e2.modules):
+            np.testing.assert_array_equal(m1.W, m2.W)
 
 
 # ──────────────────────────────────────────────

@@ -32,8 +32,8 @@ class SpikeEncoder:
     def __init__(
         self,
         num_features: int = 16,
-        num_neurons: int = None,
-        num_centers_per_feature: int = None,
+        num_neurons: int | None = None,
+        num_centers_per_feature: int | None = None,
         beta: float = 1.5,
     ):
         """
@@ -99,7 +99,7 @@ class SpikeEncoder:
         features = self._normalise(features)
 
         # Population coding via Gaussian receptive fields
-        spikes = np.zeros(self.actual_neurons, dtype=np.float32)
+        spikes = np.zeros(self.num_neurons, dtype=np.float32)
 
         for i in range(self.num_features):
             value = np.clip(features[i], 0.0, 1.0)
@@ -111,12 +111,10 @@ class SpikeEncoder:
                 -((value - self._centers) ** 2) / (2 * self._sigma ** 2)
             )
 
-            # Rate coding: threshold to binary spikes
-            # Higher activation → higher probability of spike
+            # Rate coding: deterministic threshold for clean anomaly detection
             spike_probs = activations
-            spikes[start_idx:end_idx] = (
-                spike_probs > np.random.rand(self.neurons_per_feature)
-            ).astype(np.float32)
+            threshold = 0.3
+            spikes[start_idx:end_idx] = (spike_probs > threshold).astype(np.float32)
 
         return spikes
 
@@ -129,7 +127,7 @@ class SpikeEncoder:
         features = np.asarray(features, dtype=np.float32)
         features = self._normalise(features)
 
-        spikes = np.zeros(self.actual_neurons, dtype=np.float32)
+        spikes = np.zeros(self.num_neurons, dtype=np.float32)
         threshold = 0.5
 
         for i in range(self.num_features):
@@ -154,11 +152,11 @@ class SpikeEncoder:
             feature_batch: shape (batch_size, num_features)
 
         Returns:
-            shape (batch_size, actual_neurons)
+            shape (batch_size, num_neurons)
         """
         batch_size = feature_batch.shape[0]
         result = np.zeros(
-            (batch_size, self.actual_neurons), dtype=np.float32
+            (batch_size, self.num_neurons), dtype=np.float32
         )
         for idx in range(batch_size):
             result[idx] = self.encode(feature_batch[idx])
@@ -166,6 +164,10 @@ class SpikeEncoder:
 
     def _normalise(self, features: np.ndarray) -> np.ndarray:
         """Online min-max normalisation with exponential moving update."""
+        # If features are already in [0, 1], return directly
+        if np.all(features >= 0.0) and np.all(features <= 1.0):
+            return features
+            
         self._update_count += 1
 
         if self._update_count <= self._warmup:
@@ -173,7 +175,6 @@ class SpikeEncoder:
             self._feature_min = np.minimum(self._feature_min, features)
             self._feature_max = np.maximum(self._feature_max, features)
         else:
-            # After warmup, expand the range slowly if needed, but don't pull it towards the current value!
             self._feature_min = np.minimum(self._feature_min, features)
             self._feature_max = np.maximum(self._feature_max, features)
 

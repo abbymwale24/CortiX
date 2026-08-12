@@ -1,5 +1,5 @@
 {
   "hidden": 256,
-  "eta": 0.005,
-  "threshold": 25.0
+  "eta": 0.001,
+  "threshold": -0.80
 }

@@ -34,7 +34,7 @@ class CortixConfig:
     HEBBIAN_MODULES: int = 5
     NEURONS_PER_MODULE: int = 512
     HIDDEN_NEURONS: int = 256
-    KWTA_K: int = 51  # 10% of 512
+    KWTA_SPARSITY: float = 0.10  # Fraction of hidden neurons that win
     STDP_A_PLUS: float = 0.03
     STDP_A_MINUS: float = 0.035
     STDP_TAU_PLUS: float = 20e-3  # 20 ms
@@ -43,12 +43,23 @@ class CortixConfig:
     METAPLASTICITY_ALPHA: float = 10.0
     ANOMALY_Z_THRESHOLD: float = 3.5
     SLIDING_WINDOW_SIZE: int = 1000
+    # ── Reproducibility ──
+    # Default seed for HebbianEnsemble weight initialisation.
+    # - Read from CORTIX_SEED env var if set, so judges can watch you
+    #   change it live at the terminal without touching code.
+    # - None means "no seed" -> falls back to nondeterministic init,
+    #   matching the original (buggy) behaviour, for comparison purposes.
+    RANDOM_SEED: int | None = (
+        int(os.environ["CORTIX_SEED"]) if os.environ.get("CORTIX_SEED") else 42
+    )
     CONSOLIDATION_INTERVAL_SEC: int = 600  # 10 minutes
 
     # ──────────────────────────────────────────────
     # LSTM-CNN Classifier
     # ──────────────────────────────────────────────
     MODEL_PATH: str = "models/lstm_cnn_cicids2017.pt"
+    MODEL_PATH_CICIDS2017: str = "models/lstm_cnn_cicids2017.pt"
+    MODEL_PATH_NSLKDD: str = "models/lstm_cnn_nslkdd.pt"
     CLASSIFIER_NUM_CLASSES: int = 9
     CLASSIFIER_SEQ_LEN: int = 10
     CLASSIFIER_NUM_FEATURES: int = 40

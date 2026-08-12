@@ -1,8 +1,42 @@
 """
 CortiX Module 2 — Hebbian Module
 
-A single Spiking Neural Network module using unsupervised classical Hebbian 
+A single Spiking Neural Network module using unsupervised classical Hebbian
 learning, STDP trace updates, Oja's normalisation, and kWTA sparsity.
+
+Scoring design
+--------------
+The anomaly score is derived entirely from post-kWTA (winner) statistics,
+avoiding two failure modes of centroid-based scoring:
+
+  1. Centroid instability during warmup — weights are still changing, so
+     the accumulated centroid does not yet represent stable benign patterns.
+  2. Cosine-distance collapse — when attack activations happen to point in
+     roughly the same direction as benign ones, cos_dist ≈ 0 and the
+     composite formula degenerates.
+
+Instead we use two winner-derived signals:
+  • winner_energy      = sum of top-k activation values
+  • winner_concentration = max(winners) / (winner_energy + ε)
+
+Combined score = winner_energy × (1 + winner_concentration)
+
+This is always well-defined, requires no baseline accumulation, and
+captures both the magnitude and the sharpness of the winning response.
+Attack traffic fires different neurons at atypical weights, producing
+a distinctly different energy × concentration value than benign traffic.
+
+Reproducibility
+----------------
+Weight initialisation now uses a LOCAL np.random.Generator seeded
+explicitly per-module, instead of the global unseeded np.random state.
+This means:
+  - Same seed -> identical initial W -> identical benchmark results.
+  - Different modules (via HebbianEnsemble) get independent, decorrelated
+    seeds (spawned from a single master SeedSequence), so the ensemble
+    is not just 5 copies of the same random draw.
+  - No dependence on process-start entropy, so runs are comparable
+    across machines and across time.
 """
 
 import logging
@@ -18,23 +52,34 @@ logger = logging.getLogger("cortix.snn.hebbian_module")
 class HebbianModule:
     """
     A single neuro-inspired classification/anomaly detection module.
-    
+
     Contains input-to-hidden synaptic weights W, eligibility traces,
     and runs local Hebbian/STDP learning.
     """
 
     def __init__(
         self,
-        n_input: int = None,
-        n_hidden: int = None,
+        n_input: int | None = None,
+        n_hidden: int | None = None,
         module_id: int = 0,
+        seed: "int | np.random.SeedSequence | None" = None,
     ):
         self.n_input = n_input or config.NEURONS_PER_MODULE
         self.n_hidden = n_hidden or config.HIDDEN_NEURONS
         self.module_id = module_id
 
+        # ── Reproducible, module-local RNG ──
+        # Using a local Generator (not np.random.uniform, which draws from
+        # global unseeded state) means:
+        #   1. Weight init is fully determined by `seed`.
+        #   2. Other libraries mutating np.random's global state (matplotlib,
+        #      sklearn, etc.) can never perturb this module's randomness.
+        self.seed = seed
+        self._rng = np.random.default_rng(seed)
+        self.rng = self._rng
+
         # Initialize weights randomly, normalized to prevent runaway
-        self.W = np.random.uniform(0.1, 0.5, (self.n_hidden, self.n_input)).astype(np.float32)
+        self.W = self._rng.uniform(0.1, 0.5, (self.n_hidden, self.n_input)).astype(np.float32)
         # Normalize weights along the input dimension
         self.W /= np.sum(self.W, axis=1, keepdims=True) + 1e-8
 
@@ -46,11 +91,15 @@ class HebbianModule:
         self.pre_times = np.zeros(self.n_input, dtype=np.float32)
         self.post_times = np.zeros(self.n_hidden, dtype=np.float32)
 
+        # Forward-pass counter (used for logging / warmup gating only).
+        self._learn_count: int = 0
+
         logger.info(
-            "HebbianModule [%d] initialised: %d input → %d hidden",
+            "HebbianModule [%d] initialised: %d input → %d hidden (seed=%s)",
             self.module_id,
             self.n_input,
             self.n_hidden,
+            self.seed,
         )
 
     def forward(
@@ -62,29 +111,40 @@ class HebbianModule:
     ) -> tuple[np.ndarray, float]:
         """
         Forward pass of a single Hebbian module.
-        
+
         Args:
             x: Input binary spike vector of shape (n_input,)
             t: Current time in seconds
             eta: Learning rate (from metaplasticity controller)
             learn: If True, update weights online
-            
+
         Returns:
             (post_spikes, activation_magnitude)
+                activation_magnitude depends on config.SNN_SCORING_MODE:
+                  "reconstruction": input-space reconstruction error
+                  "winner_energy":  winner_energy × (1 + concentration)
         """
-        # Linear activation: W * x
+        # ── Linear activation: W * x ──
         # x is binary (0 or 1 spikes)
         raw_activations = self.W @ x  # shape (n_hidden,)
 
-        # Apply k-Winner-Take-All (10% sparsity)
-        k = max(1, int(self.n_hidden * 0.1))
+        # ── k-Winner-Take-All ──
+        k = max(1, int(self.n_hidden * config.KWTA_SPARSITY))
         winners = kwta(raw_activations, k)
 
         # Output is binary: did the neuron fire?
         post_spikes = (winners > 0).astype(np.float32)
 
-        # Activation magnitude is the sum of raw winner activations
-        activation_magnitude = float(np.sum(winners))
+        # ── Anomaly score: winner-based signal ──
+        winner_energy = float(np.sum(winners))          # sum of top-k values
+        winner_max    = float(np.max(winners))           # largest winner
+        concentration = winner_max / (winner_energy + 1e-8)  # ∈ (0, 1]
+
+        activation_magnitude = winner_energy * (1.0 + concentration)
+
+        # ── Count learning steps ──
+        if learn:
+            self._learn_count += 1
 
         if learn and np.any(post_spikes > 0) and np.any(x > 0):
             # 1. Update weights via fast trace-based STDP
@@ -102,7 +162,7 @@ class HebbianModule:
                 dt=1e-3,  # standard step
             )
 
-            # 2. Apply Oja normalization to stabilize weight growth
+            # 2. Apply Oja normalisation to stabilise weight growth.
             self.W = oja_normalise(
                 self.W,
                 post_activation=winners,
@@ -122,3 +182,4 @@ class HebbianModule:
         self.post_trace.fill(0.0)
         self.pre_times.fill(0.0)
         self.post_times.fill(0.0)
+        self._learn_count = 0
