@@ -22,14 +22,16 @@ class CortixConfig:
     FLOW_WINDOW_SECONDS: float = 1.0
 
     # ──────────────────────────────────────────────
-    # Spike Encoding
+    # Spike Encoding / Thalamic Gating
     # ──────────────────────────────────────────────
     NUM_INPUT_NEURONS: int = 512
     RECEPTIVE_FIELD_CENTERS: int = 20  # Gaussian receptive fields per feature
     SPIKE_RATE_WINDOW_MS: float = 50.0
+    THALAMIC_GATE_ENABLED: bool = True
+    THALAMIC_ZERO_SUPPRESSION_EPS: float = 1e-4
 
     # ──────────────────────────────────────────────
-    # SNN / Hebbian Engine
+    # SNN / Hebbian Engine & Neuromodulation
     # ──────────────────────────────────────────────
     HEBBIAN_MODULES: int = 5
     NEURONS_PER_MODULE: int = 512
@@ -41,6 +43,8 @@ class CortixConfig:
     STDP_TAU_MINUS: float = 20e-3
     HEBBIAN_LR: float = 0.001
     METAPLASTICITY_ALPHA: float = 10.0
+    NEUROMODULATION_ENABLED: bool = True
+    NEUROMODULATION_BASELINE: float = 0.1
     ANOMALY_Z_THRESHOLD: float = 3.5
     SLIDING_WINDOW_SIZE: int = 1000
     # ── Reproducibility ──

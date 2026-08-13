@@ -476,6 +476,103 @@ def evaluate_hybrid(
     return hybrid_results
 
 
+def evaluate_meta_learner(
+    snn_results: dict,
+    dataset_name: str = "nslkdd",
+    cutoff: float = 0.327,
+    seed: int = 42,
+) -> Optional[dict]:
+    """
+    Evaluate the Meta-Learner (stacked generalization combiner).
+    Combines SNN z-score and Stage 2 attack probability using out-of-fold Logistic Regression.
+    """
+    if dataset_name != "nslkdd":
+        return None
+
+    try:
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from evaluation.classifier_eval_utils import (
+            load_nslkdd_features_for_classifier,
+            get_benign_class_index,
+        )
+        from evaluation.hybrid_threshold_diagnostic import collect_benign_probs
+
+        classifier_features = load_nslkdd_features_for_classifier()
+        if classifier_features is None:
+            logger.warning("Classifier features not available for meta-learner.")
+            return None
+        benign_idx = get_benign_class_index()
+        if benign_idx is None:
+            logger.warning("Could not resolve BENIGN class index for meta-learner.")
+            return None
+        model_path = config.MODEL_PATH_NSLKDD
+        if not os.path.exists(model_path):
+            logger.warning("Classifier model checkpoint missing at %s.", model_path)
+            return None
+
+        flagged_indices, benign_probs = collect_benign_probs(
+            snn_results, classifier_features, benign_idx, model_path
+        )
+        if len(flagged_indices) == 0:
+            return None
+
+        attack_probs = 1.0 - benign_probs
+        z_scores = snn_results["z_scores"]
+        z_flagged = z_scores[flagged_indices]
+        y_true = snn_results["y_true"]
+        y_flagged = y_true[flagged_indices]
+
+        X = np.column_stack([z_flagged, attack_probs])
+        y = y_flagged
+
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+        cv_preds = cast(np.ndarray, cross_val_predict(
+            LogisticRegression(class_weight="balanced"), cast(Any, X), cast(Any, y),
+            cv=skf, method="predict_proba"
+        ))
+        meta_probs = cv_preds[:, 1]
+
+        y_pred_meta = np.zeros_like(snn_results["y_pred"])
+        keep_mask = meta_probs > cutoff
+        y_pred_meta[flagged_indices[keep_mask]] = 1
+
+        tp = int(np.sum((y_true == 1) & (y_pred_meta == 1)))
+        tn = int(np.sum((y_true == 0) & (y_pred_meta == 0)))
+        fp = int(np.sum((y_true == 0) & (y_pred_meta == 1)))
+        fn = int(np.sum((y_true == 1) & (y_pred_meta == 0)))
+
+        acc = float(accuracy_score(y_true, y_pred_meta))
+        prec = float(precision_score(y_true, y_pred_meta, zero_division=cast(Any, 0)))
+        rec = float(recall_score(y_true, y_pred_meta, zero_division=cast(Any, 0)))
+        f1 = float(f1_score(y_true, y_pred_meta, zero_division=cast(Any, 0)))
+        fpr = (fp / (fp + tn)) if (fp + tn) > 0 else 0.0
+        fnr = (fn / (fn + tp)) if (fn + tp) > 0 else 0.0
+
+        meta_results = dict(snn_results)
+        meta_results.update({
+            "engine": "CortiX Meta-Learner (Stacking)",
+            "accuracy": acc,
+            "precision": prec,
+            "recall": rec,
+            "f1_score": f1,
+            "fpr": fpr,
+            "fnr": fnr,
+            "tp": tp,
+            "tn": tn,
+            "fp": fp,
+            "fn": fn,
+            "detection_rate": rec,
+            "y_pred": y_pred_meta,
+        })
+        logger.info("Meta-Learner Evaluation Complete. FPR: %.4f%%, Detection: %.2f%%, F1: %.4f",
+                    fpr * 100, rec * 100, f1)
+        return meta_results
+    except Exception as e:
+        logger.error("Meta-learner evaluation failed: %s", e)
+        return None
+
+
 # ──────────────────────────────────────────────
 # Visualisation Generators
 # ──────────────────────────────────────────────
@@ -755,6 +852,8 @@ def run_benchmark(
     seed: Optional[int] = None,
     save_plots: bool = True,
     dataset: Optional[str] = None,
+    meta_learner: bool = False,
+    meta_cutoff: float = 0.327,
 ):
     """
     Execute the full benchmark suite.
@@ -903,6 +1002,17 @@ def run_benchmark(
     )
     all_results.append(hybrid_results)
 
+    # 1.6 Meta-Learner Evaluation (SNN + LSTM-CNN + Logistic Stacking Combiner)
+    if meta_learner or dataset == "nslkdd":
+        meta_results = evaluate_meta_learner(
+            snn_results,
+            dataset_name=dataset or "nslkdd",
+            cutoff=meta_cutoff,
+            seed=resolved_seed or 42,
+        )
+        if meta_results is not None:
+            all_results.append(meta_results)
+
     # 2. Generate Visualisations (skippable for fast seed sweeps)
     if save_plots:
         plot_confusion_matrix(
@@ -977,6 +1087,14 @@ if __name__ == "__main__":
         "--no_plots", action="store_true",
         help="Disable plot generation for faster benchmark runs",
     )
+    parser.add_argument(
+        "--meta_learner", action="store_true",
+        help="Include Meta-Learner (stacked combiner) in benchmark evaluation",
+    )
+    parser.add_argument(
+        "--meta_cutoff", type=float, default=0.327,
+        help="Threshold cutoff for Meta-Learner P(attack) (default: 0.327 for optimal F1 on NSL-KDD)",
+    )
     args = parser.parse_args()
     run_benchmark(
         output_dir=args.output,
@@ -984,4 +1102,6 @@ if __name__ == "__main__":
         seed=args.seed,
         save_plots=not args.no_plots,
         dataset=args.dataset,
+        meta_learner=args.meta_learner,
+        meta_cutoff=args.meta_cutoff,
     )

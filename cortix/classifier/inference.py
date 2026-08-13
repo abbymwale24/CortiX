@@ -26,11 +26,17 @@ class ClassifierInference:
     temporal sequences of shape (10, 40) for realtime classification.
     """
 
-    def __init__(self, model_path: str | None = None, device: str | None = None):
+    def __init__(
+        self,
+        model_path: str | None = None,
+        device: str | None = None,
+        seq_len: int | None = None,
+        num_features: int | None = None,
+    ):
         self.model_path = model_path or config.MODEL_PATH
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.seq_len = config.CLASSIFIER_SEQ_LEN
-        self.num_features = config.CLASSIFIER_NUM_FEATURES
+        self.seq_len = seq_len or config.CLASSIFIER_SEQ_LEN
+        self.num_features = num_features or config.CLASSIFIER_NUM_FEATURES
 
         # Rolling buffer for flow history per source/destination context
         # Key: src_ip, Value: deque of flow feature vectors

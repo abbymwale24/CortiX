@@ -35,6 +35,8 @@ class SpikeEncoder:
         num_neurons: int | None = None,
         num_centers_per_feature: int | None = None,
         beta: float = 1.5,
+        thalamic_gate: bool | None = None,
+        thalamic_eps: float | None = None,
     ):
         """
         Args:
@@ -42,6 +44,8 @@ class SpikeEncoder:
             num_neurons: Total output neurons (default from config).
             num_centers_per_feature: Gaussian centers per feature.
             beta: Width scaling factor for Gaussian receptive fields.
+            thalamic_gate: Whether to enable Thalamic sensory gating (zero-suppression & strict sparsity).
+            thalamic_eps: Value threshold below which dummy/inactive features are silenced.
         """
         self.num_features = num_features
         self.num_neurons = num_neurons or config.NUM_INPUT_NEURONS
@@ -49,6 +53,12 @@ class SpikeEncoder:
             num_centers_per_feature or config.RECEPTIVE_FIELD_CENTERS
         )
         self.beta = beta
+        self.thalamic_gate = (
+            thalamic_gate if thalamic_gate is not None else config.THALAMIC_GATE_ENABLED
+        )
+        self.thalamic_eps = (
+            thalamic_eps if thalamic_eps is not None else config.THALAMIC_ZERO_SUPPRESSION_EPS
+        )
 
         # Ensure total neurons = num_features * num_centers (pad if needed)
         self.neurons_per_feature = self.num_neurons // self.num_features
@@ -76,11 +86,12 @@ class SpikeEncoder:
         self._warmup = 100  # samples before normalisation stabilises
 
         logger.info(
-            "SpikeEncoder: %d features → %d neurons (%d per feature, σ=%.3f)",
+            "SpikeEncoder: %d features → %d neurons (%d per feature, σ=%.3f, thalamic_gate=%s)",
             num_features,
             self.actual_neurons,
             self.neurons_per_feature,
             self._sigma,
+            self.thalamic_gate,
         )
 
     def encode(self, features: np.ndarray) -> np.ndarray:
@@ -98,32 +109,45 @@ class SpikeEncoder:
         # Online min-max normalisation
         features = self._normalise(features)
 
-        # Population coding via Gaussian receptive fields
         spikes = np.zeros(self.num_neurons, dtype=np.float32)
 
-        for i in range(self.num_features):
-            value = np.clip(features[i], 0.0, 1.0)
-            start_idx = i * self.neurons_per_feature
-            end_idx = start_idx + self.neurons_per_feature
+        if self.thalamic_gate:
+            # ── Thalamic Sensory Gating ──
+            # 1. Zero-suppression: Inactive/dummy features emit 0 spikes.
+            # 2. Peak tuning: Active features fire only their nearest receptive field center.
+            for i in range(self.num_features):
+                val = float(np.clip(features[i], 0.0, 1.0))
+                if val < self.thalamic_eps:
+                    continue
+                start_idx = i * self.neurons_per_feature
+                nearest_idx = int(np.argmin(np.abs(val - self._centers)))
+                spikes[start_idx + nearest_idx] = 1.0
+        else:
+            # Population coding via standard Gaussian receptive fields
+            for i in range(self.num_features):
+                value = np.clip(features[i], 0.0, 1.0)
+                start_idx = i * self.neurons_per_feature
+                end_idx = start_idx + self.neurons_per_feature
 
-            # Gaussian activation: exp(-||value - center||² / (2σ²))
-            activations = np.exp(
-                -((value - self._centers) ** 2) / (2 * self._sigma ** 2)
-            )
+                # Gaussian activation: exp(-||value - center||² / (2σ²))
+                activations = np.exp(
+                    -((value - self._centers) ** 2) / (2 * self._sigma ** 2)
+                )
 
-            # Rate coding: deterministic threshold for clean anomaly detection
-            spike_probs = activations
-            threshold = 0.3
-            spikes[start_idx:end_idx] = (spike_probs > threshold).astype(np.float32)
+                # Rate coding: deterministic threshold
+                spike_probs = activations
+                threshold = 0.3
+                spikes[start_idx:end_idx] = (spike_probs > threshold).astype(np.float32)
 
         return spikes
 
     def encode_deterministic(self, features: np.ndarray) -> np.ndarray:
         """
         Deterministic encoding (no stochastic spikes) — for testing.
-
-        Uses a fixed threshold instead of random sampling.
         """
+        if self.thalamic_gate:
+            return self.encode(features)
+
         features = np.asarray(features, dtype=np.float32)
         features = self._normalise(features)
 

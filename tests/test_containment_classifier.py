@@ -33,6 +33,8 @@ class TestCortixEnv:
     def test_env_creation(self):
         """Environment should initialise without errors."""
         env = CortixEnv()
+        from gymnasium.spaces import Discrete
+        assert isinstance(env.action_space, Discrete)
         assert env.action_space.n == config.NUM_ACTIONS
         assert env.observation_space.shape == (config.STATE_DIM,)
 
@@ -257,7 +259,7 @@ class TestClassifierInference:
 
     def test_warmup_returns_benign(self):
         """Before sequence buffer is full, should return BENIGN."""
-        classifier = ClassifierInference(model_path="/nonexistent/model.pt")
+        classifier = ClassifierInference(model_path="/nonexistent/model.pt", seq_len=10)
 
         flow = np.random.uniform(0, 1, 40).astype(np.float32)
         result = classifier.predict_flow("192.168.1.1", flow)
@@ -268,7 +270,7 @@ class TestClassifierInference:
 
     def test_buffer_accumulation(self):
         """Buffer should accumulate flows per IP."""
-        classifier = ClassifierInference(model_path="/nonexistent/model.pt")
+        classifier = ClassifierInference(model_path="/nonexistent/model.pt", seq_len=10)
 
         for i in range(5):
             flow = np.random.uniform(0, 1, 40).astype(np.float32)
@@ -278,7 +280,7 @@ class TestClassifierInference:
 
     def test_different_ips_separate_buffers(self):
         """Different IPs should have independent buffers."""
-        classifier = ClassifierInference(model_path="/nonexistent/model.pt")
+        classifier = ClassifierInference(model_path="/nonexistent/model.pt", seq_len=10)
 
         for i in range(3):
             classifier.predict_flow("10.0.0.1", np.zeros(40, dtype=np.float32))
@@ -290,7 +292,7 @@ class TestClassifierInference:
 
     def test_clear_buffer(self):
         """Clearing buffer should remove IP history."""
-        classifier = ClassifierInference(model_path="/nonexistent/model.pt")
+        classifier = ClassifierInference(model_path="/nonexistent/model.pt", seq_len=10)
 
         for i in range(5):
             classifier.predict_flow("10.0.0.1", np.zeros(40, dtype=np.float32))
@@ -302,14 +304,15 @@ class TestClassifierInference:
         """Without a model, full buffer should still return BENIGN (mock)."""
         classifier = ClassifierInference(model_path="/nonexistent/model.pt")
 
+        result: dict = {}
         # Fill buffer to seq_len
         for i in range(config.CLASSIFIER_SEQ_LEN):
             flow = np.random.uniform(0, 1, 40).astype(np.float32)
             result = classifier.predict_flow("10.0.0.1", flow)
 
-        assert result["class"] == "BENIGN"
-        assert result["confidence"] == 1.0
-        assert result["status"] == "active"
+        assert result.get("class") == "BENIGN"
+        assert result.get("confidence") == 1.0
+        assert result.get("status") == "active"
 
 
 # ──────────────────────────────────────────────

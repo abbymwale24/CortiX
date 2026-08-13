@@ -108,6 +108,7 @@ class HebbianModule:
         t: float,
         eta: float = 0.001,
         learn: bool = True,
+        neuromodulator_M: float = 1.0,
     ) -> tuple[np.ndarray, float]:
         """
         Forward pass of a single Hebbian module.
@@ -117,6 +118,7 @@ class HebbianModule:
             t: Current time in seconds
             eta: Learning rate (from metaplasticity controller)
             learn: If True, update weights online
+            neuromodulator_M: Factor 3 neuromodulator intensity (dopamine/danger signal)
 
         Returns:
             (post_spikes, activation_magnitude)
@@ -147,32 +149,41 @@ class HebbianModule:
             self._learn_count += 1
 
         if learn and np.any(post_spikes > 0) and np.any(x > 0):
-            # 1. Update weights via fast trace-based STDP
-            self.W, self.pre_trace, self.post_trace = stdp_update_fast(
-                self.W,
-                pre_spikes=x,
-                post_spikes=post_spikes,
-                current_time=t,
-                pre_trace=self.pre_trace,
-                post_trace=self.post_trace,
-                A_plus=config.STDP_A_PLUS,
-                A_minus=config.STDP_A_MINUS,
-                tau_plus=config.STDP_TAU_PLUS,
-                tau_minus=config.STDP_TAU_MINUS,
-                dt=1e-3,  # standard step
+            # Effective learning rate modulated by Factor 3 (Neuromodulator)
+            effective_eta = (
+                eta * neuromodulator_M
+                if config.NEUROMODULATION_ENABLED
+                else eta
             )
 
-            # 2. Apply Oja normalisation to stabilise weight growth.
-            self.W = oja_normalise(
-                self.W,
-                post_activation=winners,
-                pre_input=x,
-                eta=eta,
-            )
+            if effective_eta > 1e-7:
+                # 1. Update weights via fast trace-based STDP (amplitudes scaled by neuromodulator)
+                m_scale = neuromodulator_M if config.NEUROMODULATION_ENABLED else 1.0
+                self.W, self.pre_trace, self.post_trace = stdp_update_fast(
+                    self.W,
+                    pre_spikes=x,
+                    post_spikes=post_spikes,
+                    current_time=t,
+                    pre_trace=self.pre_trace,
+                    post_trace=self.post_trace,
+                    A_plus=config.STDP_A_PLUS * m_scale,
+                    A_minus=config.STDP_A_MINUS * m_scale,
+                    tau_plus=config.STDP_TAU_PLUS,
+                    tau_minus=config.STDP_TAU_MINUS,
+                    dt=1e-3,  # standard step
+                )
 
-            # Update spike times for records
-            self.pre_times[x > 0] = t
-            self.post_times[post_spikes > 0] = t
+                # 2. Apply Oja normalisation to stabilise weight growth.
+                self.W = oja_normalise(
+                    self.W,
+                    post_activation=winners,
+                    pre_input=x,
+                    eta=effective_eta,
+                )
+
+                # Update spike times for records
+                self.pre_times[x > 0] = t
+                self.post_times[post_spikes > 0] = t
 
         return post_spikes, activation_magnitude
 

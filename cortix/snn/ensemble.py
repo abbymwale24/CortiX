@@ -101,6 +101,7 @@ class HebbianEnsemble:
         timestamp: Optional[float] = None,
         learn: bool = True,
         context_key: Optional[str] = None,
+        neuromodulator_M: float = 1.0,
     ) -> dict:
         """
         Process a single encoded event through all modules in the ensemble.
@@ -109,6 +110,8 @@ class HebbianEnsemble:
             spike_vector: Encoded binary spike vector of shape (n_input,)
             timestamp: Event timestamp (default: current system time)
             learn: Whether to update weights online
+            context_key: Service/protocol context identifier for localized baselines
+            neuromodulator_M: Factor 3 neuromodulator intensity (dopamine/danger signal)
 
         Returns:
             A results dictionary including anomaly decision and z-score.
@@ -127,7 +130,7 @@ class HebbianEnsemble:
         # 2. Run forward pass and STDP for each module, score independently
         for i, module in enumerate(self.modules):
             post_spikes, act_mag = module.forward(
-                spike_vector, t=t, eta=eta, learn=learn
+                spike_vector, t=t, eta=eta, learn=learn, neuromodulator_M=neuromodulator_M
             )
             module_activations.append(act_mag)
             module_spikes_list.append(post_spikes)
