@@ -58,29 +58,41 @@ def collect_benign_probs(snn_results: dict, classifier_features: np.ndarray,
     num_classes = ckpt["fc2.bias"].shape[0] if "fc2.bias" in ckpt else config.CLASSIFIER_NUM_CLASSES
     num_features = ckpt["conv1.weight"].shape[1] if "conv1.weight" in ckpt else classifier_features.shape[1]
 
-    model = CortixLSTMCNN(num_classes=num_classes, num_features=num_features).to(device)
+    # Infer seq_len from checkpoint
+    if "pool.output_size" in ckpt:
+        seq_len = max(1, int(ckpt["pool.output_size"]) * 2)
+    elif "nslkdd" in model_path.lower():
+        seq_len = 1
+    else:
+        seq_len = config.CLASSIFIER_SEQ_LEN
+
+    model = CortixLSTMCNN(num_classes=num_classes, num_features=num_features, seq_len=seq_len).to(device)
     model.load_state_dict(ckpt)
     model.eval()
 
     y_pred_snn = snn_results["y_pred"]
-    seq_len = config.CLASSIFIER_SEQ_LEN
+    n_classifier = len(classifier_features)
 
     flagged_indices = np.where(y_pred_snn == 1)[0]
+    # Filter to valid indices within classifier_features length
+    flagged_indices = flagged_indices[flagged_indices < n_classifier]
     benign_probs = np.zeros(len(flagged_indices), dtype=np.float32)
 
-    logger.info("Running Stage 2 inference on %d SNN-flagged events...", len(flagged_indices))
+    logger.info("Running Stage 2 inference on %d SNN-flagged events (seq_len=%d)...", len(flagged_indices), seq_len)
 
     with torch.no_grad():
         for j, i in enumerate(flagged_indices):
-            start_idx = max(0, i - seq_len + 1)
-            seq_features = classifier_features[start_idx:i + 1]
-
-            if len(seq_features) < seq_len:
-                padding = np.zeros(
-                    (seq_len - len(seq_features), classifier_features.shape[1]),
-                    dtype=np.float32,
-                )
-                seq_features = np.vstack([padding, seq_features])
+            if seq_len == 1:
+                seq_features = classifier_features[i:i + 1]  # shape (1, num_features)
+            else:
+                start_idx = max(0, i - seq_len + 1)
+                seq_features = classifier_features[start_idx:i + 1]
+                if len(seq_features) < seq_len:
+                    padding = np.zeros(
+                        (seq_len - len(seq_features), classifier_features.shape[1]),
+                        dtype=np.float32,
+                    )
+                    seq_features = np.vstack([padding, seq_features])
 
             x_tensor = torch.tensor(seq_features, dtype=torch.float32).unsqueeze(0).to(device)
             logits = model(x_tensor)

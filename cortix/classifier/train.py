@@ -29,6 +29,7 @@ def train_model(
     weight_decay: float | None = None,
     device: str | None = None,
     model_path: str | None = None,
+    seq_len: int | None = None,
 ):
     epochs = epochs or config.CLASSIFIER_EPOCHS
     batch_size = batch_size or config.CLASSIFIER_BATCH_SIZE
@@ -43,12 +44,13 @@ def train_model(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    logger.info("Using device: %s | Target model checkpoint: %s", device, save_path)
+    seq_len = seq_len or config.CLASSIFIER_SEQ_LEN
+    logger.info("Using device: %s | Target model checkpoint: %s | seq_len: %d", device, save_path, seq_len)
 
     # 1. Load Data
     train_loader, val_loader, test_loader, encoder, _ = prepare_datasets(
         csv_path,
-        seq_len=config.CLASSIFIER_SEQ_LEN,
+        seq_len=seq_len,
         batch_size=batch_size,
     )
 
@@ -57,7 +59,7 @@ def train_model(
     logger.info("Dataset specs: %d features, %d classes (%s)", num_features, num_classes, encoder.classes_)
 
     # 2. Build Model
-    model = CortixLSTMCNN(num_classes=num_classes, num_features=num_features).to(device)
+    model = CortixLSTMCNN(num_classes=num_classes, num_features=num_features, seq_len=seq_len).to(device)
 
     # Handle Class Imbalance via Weighted CrossEntropy
     # Count frequencies of each class in training loader
@@ -164,5 +166,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--epochs", type=int, default=None, help="Number of training epochs"
     )
+    parser.add_argument(
+        "--seq_len", type=int, default=None, help="Sequence length (1 for tabular datasets like NSL-KDD)"
+    )
     args = parser.parse_args()
-    train_model(csv_path=args.dataset, model_path=args.model_path, epochs=args.epochs)
+    train_model(csv_path=args.dataset, model_path=args.model_path, epochs=args.epochs, seq_len=args.seq_len)

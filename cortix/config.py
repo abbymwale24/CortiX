@@ -46,6 +46,11 @@ class CortixConfig:
     NEUROMODULATION_ENABLED: bool = True
     NEUROMODULATION_BASELINE: float = 0.1
     ANOMALY_Z_THRESHOLD: float = 3.5
+    # Anomaly detection mode:
+    #   "upper"     — one-tailed: z > threshold flags anomaly (default, suits NSL-KDD)
+    #   "bilateral" — two-tailed: |z| > threshold flags anomaly (suits CICIDS2017
+    #                 where attacks produce familiarity *drops*)
+    ANOMALY_MODE: str = "upper"
     SLIDING_WINDOW_SIZE: int = 1000
     # ── Reproducibility ──
     # Default seed for HebbianEnsemble weight initialisation.

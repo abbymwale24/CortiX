@@ -56,10 +56,12 @@ class AnomalyScorer:
         window_size: Optional[int] = None,
         z_threshold: Optional[float] = None,
         epsilon: float = 1e-6,
+        anomaly_mode: Optional[str] = None,
     ):
         self.window_size = window_size or config.SLIDING_WINDOW_SIZE
         self.z_threshold = z_threshold or config.ANOMALY_Z_THRESHOLD
         self.epsilon = epsilon
+        self.anomaly_mode = anomaly_mode or config.ANOMALY_MODE
 
         # Global baseline window
         self._global_window = WindowBuffer(capacity=self.window_size)
@@ -122,9 +124,13 @@ class AnomalyScorer:
         # Robust MAD z-score
         z = (activation_magnitude - median_val) / scale
 
-        # One-tailed anomaly check: attacks produce HIGHER composite scores
-        # than benign traffic (magnitude spike only, not drop).
-        is_anomaly = z > self.z_threshold
+        # Anomaly check depends on mode:
+        #   "upper"     — one-tailed: only positive spikes are anomalous
+        #   "bilateral" — two-tailed: both spikes AND drops are anomalous
+        if self.anomaly_mode == "bilateral":
+            is_anomaly = abs(z) > self.z_threshold
+        else:
+            is_anomaly = z > self.z_threshold
 
         return {
             "z_score": z,

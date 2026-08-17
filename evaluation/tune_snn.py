@@ -50,10 +50,10 @@ def run_grid_search(dataset_name: str, train_features, test_features, test_label
         
         # Override config globally for the ensemble instantiation
         config.HIDDEN_NEURONS = hidden
-        config.BASE_LEARNING_RATE = eta
+        config.HEBBIAN_LR = eta
         
         encoder = SpikeEncoder(num_features=train_features.shape[1])
-        ensemble = HebbianEnsemble()
+        ensemble = HebbianEnsemble(seed=42)
         
         # Warmup Phase (Learn baseline)
         logger.debug("Starting warmup phase...")
@@ -110,23 +110,27 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, choices=["nslkdd", "cicids2017"], required=True)
     args = parser.parse_args()
 
+    benign_train: np.ndarray | None = None
+    test_features: np.ndarray | None = None
+    test_labels: np.ndarray | None = None
+
     if args.dataset == "nslkdd":
         nsl_data = load_nslkdd_dataset()
         train_features = nsl_data["X_train"]
         train_labels = nsl_data["y_train"]
         benign_train = train_features[train_labels == 0][:1000]
 
-        test_features = nsl_data["X_test"]
-        test_labels = nsl_data["y_test"]
+        test_features_raw = nsl_data["X_test"]
+        test_labels_raw = nsl_data["y_test"]
         np.random.seed(42)
-        idx = np.random.choice(len(test_features), 2000, replace=False)
-        test_features = test_features[idx]
-        test_labels = test_labels[idx]
+        idx = np.random.choice(len(test_features_raw), 2000, replace=False)
+        test_features = test_features_raw[idx]
+        test_labels = test_labels_raw[idx]
         
     elif args.dataset == "cicids2017":
         # CICIDS doesn't have a strict train/test split in our current format, 
         # so we split the merged set manually.
-        features, labels, _ = load_cicids2017_dataset(max_samples=10000)
+        features, _, labels, _ = load_cicids2017_dataset(max_samples=10000)
         
         benign_idx = np.where(labels == 0)[0]
         attack_idx = np.where(labels == 1)[0]
@@ -143,4 +147,7 @@ if __name__ == "__main__":
         test_features = features[test_idx]
         test_labels = labels[test_idx]
 
-    run_grid_search(args.dataset, benign_train, test_features, test_labels)
+    if benign_train is not None and test_features is not None and test_labels is not None:
+        run_grid_search(args.dataset, benign_train, test_features, test_labels)
+    else:
+        logger.error("Failed to load dataset: %s", args.dataset)

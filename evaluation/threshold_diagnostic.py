@@ -49,6 +49,7 @@ from evaluation.benchmark import (
     evaluate_snn,
     generate_synthetic_flows,
     load_nslkdd_dataset,
+    load_cicids2017_dataset,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -71,6 +72,20 @@ def load_dataset(dataset: str):
             context_keys=None,
             warmup_context_keys=None,
         )
+    elif dataset == "cicids2017":
+        X_test_sel, X_test_raw, y_test, y_test_class = load_cicids2017_dataset(max_samples=0)
+        # Take up to 10000 benign samples for warmup (same as NSL-KDD)
+        benign_indices = np.where(y_test == 0)[0]
+        warmup_n = min(10000, len(benign_indices))
+        warmup_features = X_test_sel[benign_indices[:warmup_n]]
+        return dict(
+            features=X_test_sel,
+            labels_binary=y_test,
+            labels_class=y_test_class,
+            warmup_features=warmup_features,
+            context_keys=None,
+            warmup_context_keys=None,
+        )
     else:
         features, labels_binary, labels_class = generate_synthetic_flows(
             num_benign=3000, num_attack=1000
@@ -82,13 +97,18 @@ def load_dataset(dataset: str):
 
 
 def sweep_thresholds(z_scores: np.ndarray, y_true: np.ndarray, n_points: int = 60) -> list[dict]:
-    """Evaluate detection/FPR/F1/accuracy across a range of candidate thresholds."""
-    lo, hi = np.percentile(z_scores, 1), np.percentile(z_scores, 99.5)
+    """Evaluate detection/FPR/F1/accuracy across a range of candidate thresholds.
+    
+    When bilateral=True, uses |z| > threshold (two-tailed) instead of z > threshold.
+    """
+    bilateral = config.ANOMALY_MODE == "bilateral"
+    signal = np.abs(z_scores) if bilateral else z_scores
+    lo, hi = np.percentile(signal, 1), np.percentile(signal, 99.5)
     candidates = np.linspace(lo, hi, n_points)
 
     rows = []
     for thresh in candidates:
-        y_pred = (z_scores > thresh).astype(int)
+        y_pred = (signal > thresh).astype(int)
         tp = int(np.sum((y_true == 1) & (y_pred == 1)))
         tn = int(np.sum((y_true == 0) & (y_pred == 0)))
         fp = int(np.sum((y_true == 0) & (y_pred == 1)))
@@ -106,7 +126,7 @@ def sweep_thresholds(z_scores: np.ndarray, y_true: np.ndarray, n_points: int = 6
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="nslkdd", choices=["nslkdd", "synthetic"])
+    parser.add_argument("--dataset", type=str, default="nslkdd", choices=["nslkdd", "cicids2017", "synthetic"])
     parser.add_argument("--tune_file", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="evaluation/results")
@@ -120,6 +140,7 @@ def main():
             config.HEBBIAN_LR = t.get("learning_rate", t.get("eta", config.HEBBIAN_LR))
             config.METAPLASTICITY_ALPHA = t.get("meta_alpha", config.METAPLASTICITY_ALPHA)
             config.HIDDEN_NEURONS = t.get("hidden_neurons", t.get("hidden", config.HIDDEN_NEURONS))
+            config.ANOMALY_MODE = t.get("anomaly_mode", config.ANOMALY_MODE)
             logger.info("Loaded tuning config: %s", t)
 
     os.makedirs(args.output, exist_ok=True)
@@ -140,8 +161,12 @@ def main():
     z_scores = result["z_scores"]
     y_true = result["y_true"]
 
+    # For bilateral mode, use |z| as the scoring signal
+    bilateral = config.ANOMALY_MODE == "bilateral"
+    scoring_signal = np.abs(z_scores) if bilateral else z_scores
+
     # ── 1. AUC: the ceiling on what ANY threshold can achieve ──
-    auc = float(roc_auc_score(y_true, z_scores))
+    auc = float(roc_auc_score(y_true, scoring_signal))
 
     print("\n" + "=" * 100)
     print("                    SEPARABILITY CHECK — z-score vs ground truth")

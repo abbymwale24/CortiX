@@ -1,5 +1,6 @@
 {
   "hidden": 512,
-  "eta": 0.005,
-  "threshold": 10.0
+  "eta": 0.001,
+  "threshold": 0.5,
+  "anomaly_mode": "upper"
 }

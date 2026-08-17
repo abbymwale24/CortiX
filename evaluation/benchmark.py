@@ -390,15 +390,23 @@ def evaluate_hybrid(
 
     num_classes = ckpt["fc2.bias"].shape[0] if "fc2.bias" in ckpt else config.CLASSIFIER_NUM_CLASSES
     # Infer num_features from the checkpoint's own conv1 weight shape
-    # (in_channels dimension) rather than trusting a possibly-wrong config
-    # constant -- this makes the code correct regardless of which dataset
-    # the loaded checkpoint was actually trained on.
     if "conv1.weight" in ckpt:
         num_features = ckpt["conv1.weight"].shape[1]
     else:
         num_features = classifier_features.shape[1]
 
-    model = CortixLSTMCNN(num_classes=num_classes, num_features=num_features).to(device)
+    # Infer seq_len from checkpoint's adaptive pool output_size.
+    # AdaptiveMaxPool1d stores output_size; pool_out = max(1, seq_len//2),
+    # so seq_len = pool_out * 2 (or 1 if pool_out == 1).
+    if "pool.output_size" in ckpt:
+        inferred_seq_len = max(1, int(ckpt["pool.output_size"]) * 2)
+    elif dataset_name == "nslkdd":
+        # Default: use 1 for NSL-KDD if retrained with seq_len=1
+        inferred_seq_len = 1
+    else:
+        inferred_seq_len = config.CLASSIFIER_SEQ_LEN
+
+    model = CortixLSTMCNN(num_classes=num_classes, num_features=num_features, seq_len=inferred_seq_len).to(device)
     model.load_state_dict(ckpt)
     model.eval()
 
@@ -413,20 +421,42 @@ def evaluate_hybrid(
     y_pred_snn = snn_results["y_pred"]
     y_pred_hybrid = y_pred_snn.copy()
 
-    seq_len = config.CLASSIFIER_SEQ_LEN
+    seq_len = inferred_seq_len
+    n_classifier = len(classifier_features)
+    n_snn = len(y_pred_snn)
+    if n_classifier != n_snn:
+        logger.warning(
+            "Row count mismatch: SNN evaluated %d samples but classifier "
+            "features have %d rows (clean_dataframe drops duplicates). "
+            "Indices >= %d will keep SNN prediction unchanged.",
+            n_snn, n_classifier, n_classifier,
+        )
 
     with torch.no_grad():
         for i in range(len(y_pred_snn)):
             if y_pred_snn[i] == 1:
-                start_idx = max(0, i - seq_len + 1)
-                seq_features = classifier_features[start_idx:i + 1]
+                if i >= n_classifier:
+                    # Out-of-bounds for classifier features; keep SNN's flag
+                    continue
+                if seq_len == 1 or dataset_name == "nslkdd":
+                    seq_features = classifier_features[i:i + seq_len]
+                    if len(seq_features) < seq_len:
+                        padding = np.zeros(
+                            (seq_len - len(seq_features), classifier_features.shape[1]),
+                            dtype=np.float32,
+                        )
+                        seq_features = np.vstack([padding, seq_features])
+                else:
+                    # CICIDS2017: genuine temporal flow sequences
+                    start_idx = max(0, i - seq_len + 1)
+                    seq_features = classifier_features[start_idx:i + 1]
 
-                if len(seq_features) < seq_len:
-                    padding = np.zeros(
-                        (seq_len - len(seq_features), classifier_features.shape[1]),
-                        dtype=np.float32,
-                    )
-                    seq_features = np.vstack([padding, seq_features])
+                    if len(seq_features) < seq_len:
+                        padding = np.zeros(
+                            (seq_len - len(seq_features), classifier_features.shape[1]),
+                            dtype=np.float32,
+                        )
+                        seq_features = np.vstack([padding, seq_features])
 
                 # classifier_features are ALREADY scaled by the classifier's
                 # own saved scaler (loaded above / inside the nslkdd loader) --
@@ -805,7 +835,6 @@ def load_cicids2017_dataset(max_samples: int = 10000):
     import pandas as pd
     import glob
     from sklearn.preprocessing import MinMaxScaler
-    from sklearn.feature_selection import SelectKBest, f_classif
     from sklearn.model_selection import train_test_split
 
     files = glob.glob("data/cicids2017/*.csv")
@@ -825,21 +854,34 @@ def load_cicids2017_dataset(max_samples: int = 10000):
     y_class = df[label_col].tolist()
     X = np.asarray(df.drop(columns=[label_col]))
 
-    X_train, X_test, y_train, y_test, _, y_test_class = train_test_split(
-        X, y, y_class, test_size=0.3, random_state=42, stratify=y
+    # Extract 40 canonical features for Stage 2 classifier
+    from cortix.classifier.dataset import SELECTED_FEATURES
+    existing_features = [f for f in SELECTED_FEATURES if f in df.columns]
+    missing_features = [f for f in SELECTED_FEATURES if f not in df.columns]
+    df_classifier = df[existing_features].copy()
+    for col in missing_features:
+        df_classifier[col] = 0.0
+    X_classifier = df_classifier[SELECTED_FEATURES].to_numpy(dtype=np.float32)
+
+    indices = np.arange(len(df))
+    train_idx, test_idx = train_test_split(
+        indices, test_size=0.3, random_state=42, stratify=y
     )
 
+    X_train, X_test = X[train_idx], X[test_idx]
+    y_train, y_test = y[train_idx], y[test_idx]
+    y_test_class = [y_class[i] for i in test_idx]
+    X_test_classifier = X_classifier[test_idx]
+
+    # Same logic as NSL-KDD: tanh compression + MinMaxScaler, NO SelectKBest
+    X_train_compressed = np.tanh(X_train / 3.0)
+    X_test_compressed = np.tanh(X_test / 3.0)
+
     scaler = MinMaxScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    X_train_sel = scaler.fit_transform(X_train_compressed)
+    X_test_sel = scaler.transform(X_test_compressed)
 
-    selector = SelectKBest(f_classif, k=16)
-    selector.fit(X_train_scaled, np.asarray(y_train))
-
-    X_train_sel = selector.transform(X_train_scaled)
-    X_test_sel = selector.transform(X_test_scaled)
-
-    return X_test_sel, X_test_scaled, y_test, y_test_class
+    return X_test_sel, X_test_classifier, y_test, y_test_class
 
 
 # ──────────────────────────────────────────────
@@ -874,6 +916,7 @@ def run_benchmark(
             config.HEBBIAN_LR = t.get("learning_rate", t.get("eta", config.HEBBIAN_LR))
             config.METAPLASTICITY_ALPHA = t.get("meta_alpha", config.METAPLASTICITY_ALPHA)
             config.HIDDEN_NEURONS = t.get("hidden_neurons", t.get("hidden", config.HIDDEN_NEURONS))
+            config.ANOMALY_MODE = t.get("anomaly_mode", config.ANOMALY_MODE)
             # Only let the tune file set the seed if the caller didn't
             # already pass one explicitly -- explicit arg always wins.
             if seed is None and "seed" in t:
@@ -937,35 +980,49 @@ def run_benchmark(
         y_class = df[label_col].tolist()
         X = df.drop(columns=[label_col]).values
 
+        from cortix.classifier.dataset import SELECTED_FEATURES
+        existing_features = [f for f in SELECTED_FEATURES if f in df.columns]
+        missing_features = [f for f in SELECTED_FEATURES if f not in df.columns]
+        df_classifier = df[existing_features].copy()
+        for col in missing_features:
+            df_classifier[col] = 0.0
+        X_classifier = df_classifier[SELECTED_FEATURES].to_numpy(dtype=np.float32)
+
         from sklearn.model_selection import train_test_split
-        X_train, X_test, y_train, y_test, _, y_test_class = train_test_split(
-            X, y, y_class, test_size=0.3, random_state=42, stratify=y
+        indices = np.arange(len(df))
+        train_idx, test_idx = train_test_split(
+            indices, test_size=0.3, random_state=42, stratify=y
         )
 
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+        y_test_class = [y_class[i] for i in test_idx]
+        X_test_classifier = X_classifier[test_idx]
+
+        # ── Same logic as NSL-KDD: tanh compression + MinMaxScaler, NO SelectKBest ──
+        # Use ALL features instead of crushing to 16 via SelectKBest.
+        # NSL-KDD achieves AUC 0.77+ because the SNN sees 119 features;
+        # restricting CICIDS2017 to 16 destroyed the signal (AUC 0.47).
+        X_train_compressed = np.tanh(X_train / 3.0)
+        X_test_compressed = np.tanh(X_test / 3.0)
+
         scaler = MinMaxScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-
-        from sklearn.feature_selection import SelectKBest, f_classif
-        selector = SelectKBest(f_classif, k=16)
-        selector.fit(X_train_scaled, y_train)
-
-        X_train_sel = selector.transform(X_train_scaled)
-        X_test_sel = selector.transform(X_test_scaled)
+        X_train_sel = scaler.fit_transform(X_train_compressed)
+        X_test_sel = scaler.transform(X_test_compressed)
 
         benign_train_mask = y_train == 0
         benign_train = X_train_sel[benign_train_mask]
-        warmup_n = min(5000, len(benign_train))
+        warmup_n = min(10000, len(benign_train))  # 10K like NSL-KDD
         warmup_features = benign_train[:warmup_n]
 
         warmup_context_keys = (cast(np.ndarray, X_train)[benign_train_mask, 0][:warmup_n] // 1000).astype(int)
         context_keys = (cast(np.ndarray, X_test)[:, 0] // 1000).astype(int)
 
         features = X_test_sel
-        raw_features = X_test_scaled
+        raw_features = X_test_classifier
         labels_binary = y_test
         labels_class = y_test_class
-        logger.info("Loaded CICIDS2017: %d test samples", len(features))
+        logger.info("Loaded CICIDS2017: %d test samples, %d features (full, no SelectKBest)", len(features), features.shape[1])
 
     else:
         features, labels_binary, labels_class = generate_synthetic_flows(

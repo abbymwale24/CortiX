@@ -47,10 +47,10 @@ class CortixLSTMCNN(nn.Module):
     Expected input tensor: (batch_size, seq_len=10, num_features=40)
     """
 
-    def __init__(self, num_classes: int | None = None, num_features: int | None = None):
+    def __init__(self, num_classes: int | None = None, num_features: int | None = None, seq_len: int | None = None):
         super().__init__()
         self.num_classes = num_classes or config.CLASSIFIER_NUM_CLASSES
-        self.seq_len = config.CLASSIFIER_SEQ_LEN
+        self.seq_len = seq_len or config.CLASSIFIER_SEQ_LEN
         self.num_features = num_features or config.CLASSIFIER_NUM_FEATURES
 
         # CNN feature extractor (acts along the sequence features)
@@ -71,7 +71,11 @@ class CortixLSTMCNN(nn.Module):
         )
         self.bn2 = nn.BatchNorm1d(128)
         
-        self.pool = nn.MaxPool1d(kernel_size=2)  # seq_len -> seq_len // 2
+        # Adaptive pooling so the model works with any seq_len (including 1
+        # for independent tabular records like NSL-KDD where sequences are
+        # artificial).  Output length = max(1, seq_len // 2).
+        self._pool_out = max(1, self.seq_len // 2)
+        self.pool = nn.AdaptiveMaxPool1d(self._pool_out)
 
         # BiLSTM Layer
         # Input: (batch_size, seq_len // 2, 128)
