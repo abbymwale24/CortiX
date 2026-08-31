@@ -11,13 +11,13 @@ import BrainView from "./pages/BrainView";
 
 const API_BASE = "http://localhost:8000";
 const WS_URL = "ws://localhost:8000/ws/live";
-const MAX_RECONNECT_DELAY = 30000; // 30 seconds max backoff
+const MAX_RECONNECT_DELAY = 30000;
 
 function App() {
   const [liveAlerts, setLiveAlerts] = useState([]);
-  const [wsStatus, setWsStatus] = useState("disconnected"); // "connected" | "reconnecting" | "disconnected"
+  const [wsStatus, setWsStatus] = useState("disconnected");
   const [systemStats, setSystemStats] = useState({
-    fpr: 0.0,
+    avg_fpr: 0.0,
     p50_latency_ms: 0.0,
     total_events_processed: 0,
   });
@@ -25,8 +25,6 @@ function App() {
   const wsRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef(null);
-
-  // ── WebSocket with exponential backoff reconnection ──
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -52,11 +50,10 @@ function App() {
         }
       };
 
-      ws.onclose = (event) => {
+      ws.onclose = () => {
         setWsStatus("reconnecting");
         const attempt = reconnectAttemptRef.current;
         const delay = Math.min(1000 * Math.pow(2, attempt), MAX_RECONNECT_DELAY);
-        console.log(`[CortiX WS] Disconnected. Reconnecting in ${delay / 1000}s (attempt ${attempt + 1})`);
 
         reconnectTimerRef.current = setTimeout(() => {
           reconnectAttemptRef.current += 1;
@@ -73,8 +70,6 @@ function App() {
     }
   }, []);
 
-  // ── Fetch system metrics summary ──
-
   const fetchSystemStats = useCallback(() => {
     axios.get(`${API_BASE}/api/metrics/summary`)
       .then((res) => setSystemStats(res.data))
@@ -85,7 +80,6 @@ function App() {
     connectWebSocket();
     fetchSystemStats();
 
-    // Poll metrics every 15 seconds
     const metricsInterval = setInterval(fetchSystemStats, 15000);
 
     return () => {
@@ -94,8 +88,6 @@ function App() {
       if (wsRef.current) wsRef.current.close();
     };
   }, [connectWebSocket, fetchSystemStats]);
-
-  // ── Connection status indicator ──
 
   const statusConfig = {
     connected: { color: "#10b981", glow: "#10b981", label: "SYSTEM ACTIVE" },
@@ -173,16 +165,15 @@ function App() {
         <main style={{ flex: 1, padding: "40px", overflowY: "auto" }}>
           <Routes>
             <Route path="/" element={<Overview liveAlerts={liveAlerts} />} />
-            <Route path="/threats" element={<Threats />} />
-            <Route path="/attackers" element={<Attackers />} />
+            <Route path="/threats" element={<Threats liveAlerts={liveAlerts} />} />
+            <Route path="/attackers" element={<Attackers liveAlerts={liveAlerts} />} />
             <Route path="/metrics" element={<Metrics />} />
-            <Route path="/containment" element={<Containment />} />
+            <Route path="/containment" element={<Containment liveAlerts={liveAlerts} />} />
             <Route path="/brain" element={<BrainView />} />
           </Routes>
         </main>
       </div>
 
-      {/* Pulse animation for reconnecting indicator */}
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; }
@@ -193,9 +184,6 @@ function App() {
   );
 }
 
-/**
- * Navigation links with active route highlighting.
- */
 function NavLinks() {
   const location = useLocation();
 
@@ -245,4 +233,3 @@ const navItemStyle = {
 };
 
 export default App;
-

@@ -69,7 +69,10 @@ Thumbs.db
 # CortiX-specific
 data/cicids2017/
 data/cicids2017_merged.csv
+data/nslkdd/
+data/*.csv
 evaluation/results/
 models/
 .pytest_cache/
 cortix.db
+

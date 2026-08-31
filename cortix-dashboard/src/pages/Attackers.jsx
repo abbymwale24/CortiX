@@ -1,22 +1,50 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { Globe, MapPin, Compass } from "lucide-react";
+import PageHeader from "../components/PageHeader";
 
-function Attackers() {
+const API_BASE = "http://localhost:8000";
+
+function Attackers({ liveAlerts }) {
   const [attackers, setAttackers] = useState([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(new Date());
 
-  useEffect(() => {
-    axios.get("http://localhost:8000/api/attackers")
-      .then((res) => setAttackers(res.data))
-      .catch(() => {});
+  const fetchAttackers = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      const res = await axios.get(`${API_BASE}/api/attackers`);
+      setAttackers(res.data);
+      setLastRefreshed(new Date());
+    } catch (err) {
+      console.error("Failed to fetch attackers:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
   }, []);
 
+  useEffect(() => {
+    fetchAttackers();
+    const interval = setInterval(fetchAttackers, 5000);
+    return () => clearInterval(interval);
+  }, [fetchAttackers]);
+
+  // Re-fetch when WS alert arrives
+  useEffect(() => {
+    if (liveAlerts && liveAlerts.length > 0) {
+      fetchAttackers();
+    }
+  }, [liveAlerts, fetchAttackers]);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
-      <div>
-        <h2 style={{ fontSize: "28px", fontWeight: "bold", margin: "0 0 8px 0" }}>Attacker Attribution Profiles</h2>
-        <p style={{ color: "#9ca3af", margin: 0 }}>Passive OSINT-derived profiles of identified adversaries.</p>
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: "28px" }}>
+      <PageHeader
+        title="Attacker Attribution Profiles"
+        subtitle="Passive OSINT-derived profiles of identified adversaries."
+        onRefresh={fetchAttackers}
+        isRefreshing={isRefreshing}
+        lastRefreshed={lastRefreshed}
+      />
 
       {attackers.length === 0 ? (
         <div style={{
@@ -36,7 +64,7 @@ function Attackers() {
           gap: "24px"
         }}>
           {attackers.map((attacker, idx) => (
-            <div key={idx} style={{
+            <div key={attacker.id || idx} style={{
               backgroundColor: "#11141e",
               borderRadius: "16px",
               border: "1px solid #1f2937",

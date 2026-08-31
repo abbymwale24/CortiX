@@ -49,6 +49,12 @@ class AnomalyScorer:
 
     MAD is preferred over standard deviation because it is robust
     to outliers — a single extreme anomaly won't inflate the baseline.
+
+    Adaptive threshold calibration
+    --------------------------------
+    After warmup, the scorer can calibrate its z-threshold to the
+    p99.7 of observed benign z-scores, adapting to the actual
+    activation distribution rather than relying on a static config value.
     """
 
     def __init__(
@@ -57,11 +63,13 @@ class AnomalyScorer:
         z_threshold: Optional[float] = None,
         epsilon: float = 1e-6,
         anomaly_mode: Optional[str] = None,
+        adaptive_threshold: bool = True,
     ):
         self.window_size = window_size or config.SLIDING_WINDOW_SIZE
         self.z_threshold = z_threshold or config.ANOMALY_Z_THRESHOLD
         self.epsilon = epsilon
         self.anomaly_mode = anomaly_mode or config.ANOMALY_MODE
+        self.adaptive_threshold = adaptive_threshold
 
         # Global baseline window
         self._global_window = WindowBuffer(capacity=self.window_size)
@@ -73,6 +81,36 @@ class AnomalyScorer:
 
         # Latency tracking
         self._latencies: deque = deque(maxlen=10000)
+
+        # Adaptive threshold state
+        self._calibrated = False
+        self._warmup_z_scores: list[float] = []
+
+    def calibrate_threshold(self, percentile: float = 99.7):
+        """
+        Calibrate z-threshold from the warmup z-score distribution.
+
+        Sets the threshold so that only (100 - percentile)% of the
+        benign warmup traffic would be flagged as anomalous.
+        """
+        if len(self._warmup_z_scores) < 50:
+            return  # Not enough data to calibrate
+        z_arr = np.array(self._warmup_z_scores)
+        if self.anomaly_mode == "bilateral":
+            # Two-tailed: use absolute z-scores
+            calibrated = float(np.percentile(np.abs(z_arr), percentile))
+        else:
+            # One-tailed: use raw z-scores
+            calibrated = float(np.percentile(z_arr, percentile))
+        # Floor at 1.5 to prevent degenerate thresholds
+        calibrated = max(calibrated, 1.5)
+        logger.info(
+            "Adaptive threshold calibrated: %.3f → %.3f (from %d warmup z-scores, p%.1f)",
+            self.z_threshold, calibrated, len(self._warmup_z_scores), percentile,
+        )
+        self.z_threshold = calibrated
+        self._calibrated = True
+        self._warmup_z_scores.clear()
 
     def score(
         self,
@@ -123,6 +161,10 @@ class AnomalyScorer:
 
         # Robust MAD z-score
         z = (activation_magnitude - median_val) / scale
+
+        # Collect warmup z-scores for adaptive threshold calibration
+        if update_baseline and self.adaptive_threshold and not self._calibrated:
+            self._warmup_z_scores.append(z)
 
         # Anomaly check depends on mode:
         #   "upper"     — one-tailed: only positive spikes are anomalous
@@ -201,4 +243,6 @@ class AnomalyScorer:
         self._global_window.clear()
         self._context_windows.clear()
         self._latencies.clear()
+        self._calibrated = False
+        self._warmup_z_scores.clear()
 

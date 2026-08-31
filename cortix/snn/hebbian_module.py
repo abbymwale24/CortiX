@@ -137,12 +137,26 @@ class HebbianModule:
         # Output is binary: did the neuron fire?
         post_spikes = (winners > 0).astype(np.float32)
 
-        # ── Anomaly score: winner-based signal ──
-        winner_energy = float(np.sum(winners))          # sum of top-k values
-        winner_max    = float(np.max(winners))           # largest winner
-        concentration = winner_max / (winner_energy + 1e-8)  # ∈ (0, 1]
-
-        activation_magnitude = winner_energy * (1.0 + concentration)
+        # ── Anomaly score ──
+        if config.SNN_SCORING_MODE == "reconstruction":
+            # Cosine-distance reconstruction scoring.
+            # x_hat = W.T @ winners is the network's "reconstruction" of the
+            # input from its sparse hidden representation.
+            # Cosine similarity is scale-invariant and measures directional
+            # alignment: familiar traffic → high similarity → low score.
+            x_hat = self.W.T @ winners          # (n_input,)
+            dot = float(np.dot(x, x_hat))
+            norm_x = float(np.linalg.norm(x)) + 1e-8
+            norm_xhat = float(np.linalg.norm(x_hat)) + 1e-8
+            cosine_sim = dot / (norm_x * norm_xhat)
+            # Anomaly score: 1 - similarity (higher = more anomalous)
+            activation_magnitude = 1.0 - cosine_sim
+        else:
+            # Original winner-energy scoring
+            winner_energy = float(np.sum(winners))
+            winner_max    = float(np.max(winners))
+            concentration = winner_max / (winner_energy + 1e-8)
+            activation_magnitude = winner_energy * (1.0 + concentration)
 
         # ── Count learning steps ──
         if learn:

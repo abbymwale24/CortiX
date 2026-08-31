@@ -53,7 +53,7 @@ def run_grid_search(dataset_name: str, train_features, test_features, test_label
         config.HEBBIAN_LR = eta
         
         encoder = SpikeEncoder(num_features=train_features.shape[1])
-        ensemble = HebbianEnsemble(seed=42)
+        ensemble = HebbianEnsemble(seed=42, n_input=encoder.num_neurons)
         
         # Warmup Phase (Learn baseline)
         logger.debug("Starting warmup phase...")

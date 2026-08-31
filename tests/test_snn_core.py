@@ -638,7 +638,7 @@ class TestSpikeEncoder:
         assert np.count_nonzero(spikes) == 0, "Zero features should produce 0 spikes under Thalamic gating"
 
     def test_thalamic_gate_sparsity(self):
-        """Thalamic gate should enforce strict biological sparsity (<= 10%)."""
+        """Thalamic gate should enforce controlled sparsity with adaptive multi-spike gating."""
         encoder = SpikeEncoder(num_features=119, num_neurons=512, thalamic_gate=True)
         # Typical sparse NSL-KDD vector: 30 non-zero continuous features, 89 zeros
         features = np.zeros(119, dtype=np.float32)
@@ -646,9 +646,11 @@ class TestSpikeEncoder:
         spikes = encoder.encode(features)
 
         active_count = np.count_nonzero(spikes)
-        sparsity = active_count / 512.0
-        assert active_count == 30, f"Expected 30 active spikes, got {active_count}"
-        assert 0.04 <= sparsity <= 0.10, f"Expected biological sparsity ~5-10%, got {sparsity:.2%}"
+        sparsity = active_count / encoder.num_neurons
+        top_k = encoder.effective_top_k
+        expected = 30 * min(top_k, encoder.neurons_per_feature)
+        assert active_count == expected, f"Expected {expected} active spikes (30 features × top-{top_k}), got {active_count}"
+        assert sparsity <= 0.25, f"Expected sparsity <= 25%, got {sparsity:.2%}"
 
 
 # ──────────────────────────────────────────────

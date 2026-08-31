@@ -41,14 +41,22 @@ class SpikeEncoder:
         """
         Args:
             num_features: Number of input features.
-            num_neurons: Total output neurons (default from config).
+            num_neurons: Total output neurons (default from config, auto-scaled up
+                         for high-dimensional inputs to ensure ≥8 neurons per feature).
             num_centers_per_feature: Gaussian centers per feature.
             beta: Width scaling factor for Gaussian receptive fields.
             thalamic_gate: Whether to enable Thalamic sensory gating (zero-suppression & strict sparsity).
             thalamic_eps: Value threshold below which dummy/inactive features are silenced.
         """
         self.num_features = num_features
-        self.num_neurons = num_neurons or config.NUM_INPUT_NEURONS
+        # Auto-scale: guarantee at least 8 neurons per feature for encoding
+        # resolution.  For 16 features → 512 (unchanged).  For 119 features
+        # → max(512, 119*8) = 952, giving each feature enough receptive-field
+        # centres to discriminate fine-grained value differences.
+        min_neurons = num_features * 8
+        default_neurons = config.NUM_INPUT_NEURONS
+        self.num_neurons = num_neurons or max(default_neurons, min_neurons)
+
         self.num_centers = (
             num_centers_per_feature or config.RECEPTIVE_FIELD_CENTERS
         )
@@ -63,6 +71,13 @@ class SpikeEncoder:
         # Ensure total neurons = num_features * num_centers (pad if needed)
         self.neurons_per_feature = self.num_neurons // self.num_features
         self.actual_neurons = self.neurons_per_feature * self.num_features
+
+        # Adaptive top-K: cap at ~25% of neurons_per_feature to avoid
+        # saturation.  For 32 neurons/feat → min(3, 8) = 3. For 4 → min(3, 1) = 1.
+        self.effective_top_k = min(
+            config.THALAMIC_TOP_K,
+            max(1, self.neurons_per_feature // 4),
+        )
 
         # Pre-compute Gaussian centers and widths for each feature
         # Centers uniformly spaced in [0, 1]
@@ -86,12 +101,13 @@ class SpikeEncoder:
         self._warmup = 100  # samples before normalisation stabilises
 
         logger.info(
-            "SpikeEncoder: %d features → %d neurons (%d per feature, σ=%.3f, thalamic_gate=%s)",
+            "SpikeEncoder: %d features → %d neurons (%d per feature, σ=%.3f, thalamic_gate=%s, top_k=%d)",
             num_features,
             self.actual_neurons,
             self.neurons_per_feature,
             self._sigma,
             self.thalamic_gate,
+            self.effective_top_k,
         )
 
     def encode(self, features: np.ndarray) -> np.ndarray:
@@ -112,32 +128,47 @@ class SpikeEncoder:
         spikes = np.zeros(self.num_neurons, dtype=np.float32)
 
         if self.thalamic_gate:
-            # ── Thalamic Sensory Gating ──
-            # 1. Zero-suppression: Inactive/dummy features emit 0 spikes.
-            # 2. Peak tuning: Active features fire only their nearest receptive field center.
-            for i in range(self.num_features):
-                val = float(np.clip(features[i], 0.0, 1.0))
-                if val < self.thalamic_eps:
-                    continue
-                start_idx = i * self.neurons_per_feature
-                nearest_idx = int(np.argmin(np.abs(val - self._centers)))
-                spikes[start_idx + nearest_idx] = 1.0
+            # ── Vectorised Multi-Spike Thalamic Gating ──
+            # Each feature fires its top-K nearest receptive field centres
+            # (K=1 is the original ultra-sparse mode; K=3 default for better
+            # discriminability without sacrificing sparsity too much).
+            top_k = self.effective_top_k
+            vals = np.clip(features[:self.num_features], 0.0, 1.0)  # (F,)
+            # Compute distances to all centres for all features at once
+            # vals[:, None] is (F, 1), self._centers[None, :] is (1, C)
+            dists = np.abs(vals[:, np.newaxis] - self._centers[np.newaxis, :])  # (F, C)
+            # Suppress features below thalamic threshold
+            active_mask = vals >= self.thalamic_eps  # (F,)
+            # Find top-K nearest centres per feature
+            k = min(top_k, self.neurons_per_feature)
+            if k >= self.neurons_per_feature:
+                # All neurons fire for active features
+                for i in range(self.num_features):
+                    if active_mask[i]:
+                        start = i * self.neurons_per_feature
+                        spikes[start:start + self.neurons_per_feature] = 1.0
+            else:
+                # Top-K nearest centres per feature (vectorised)
+                nearest_k = np.argpartition(dists, k, axis=1)[:, :k]  # (F, K)
+                for i in range(self.num_features):
+                    if active_mask[i]:
+                        start = i * self.neurons_per_feature
+                        spikes[start + nearest_k[i]] = 1.0
         else:
-            # Population coding via standard Gaussian receptive fields
-            for i in range(self.num_features):
-                value = np.clip(features[i], 0.0, 1.0)
-                start_idx = i * self.neurons_per_feature
-                end_idx = start_idx + self.neurons_per_feature
-
-                # Gaussian activation: exp(-||value - center||² / (2σ²))
-                activations = np.exp(
-                    -((value - self._centers) ** 2) / (2 * self._sigma ** 2)
-                )
-
-                # Rate coding: deterministic threshold
-                spike_probs = activations
-                threshold = 0.3
-                spikes[start_idx:end_idx] = (spike_probs > threshold).astype(np.float32)
+            # ── Vectorised Gaussian Population Coding ──
+            # Compute all activations in one matrix operation instead of
+            # a Python for-loop. This directly fixes the latency blowup
+            # on high-dimensional datasets like CICIDS2017.
+            vals = np.clip(features[:self.num_features], 0.0, 1.0)  # (F,)
+            # (F, 1) - (1, C) -> (F, C) Gaussian activations
+            activations = np.exp(
+                -((vals[:, np.newaxis] - self._centers[np.newaxis, :]) ** 2)
+                / (2 * self._sigma ** 2)
+            )  # shape (F, C)
+            threshold = 0.3
+            spike_matrix = (activations > threshold).astype(np.float32)  # (F, C)
+            # Flatten into the spike vector
+            spikes[:self.actual_neurons] = spike_matrix.ravel()
 
         return spikes
 

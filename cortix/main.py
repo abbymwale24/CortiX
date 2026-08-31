@@ -13,6 +13,8 @@ import argparse
 import asyncio
 import logging
 import threading
+from datetime import datetime, timezone
+from typing import Optional, Any, cast
 import numpy as np
 
 from cortix.config import config
@@ -45,7 +47,7 @@ class CortixDaemon:
     calibrating with supervised classifier, and dispatching DQN containment actions.
     """
 
-    def __init__(self, interface: str = None, mode: str = "live"):
+    def __init__(self, interface: Optional[str] = None, mode: str = "live"):
         self.mode = mode
         self.interface = interface or config.CAPTURE_INTERFACE
 
@@ -117,7 +119,12 @@ class CortixDaemon:
 
     def _process_flow(self, flow: dict):
         """Processes completed flow record through SNN, LSTM-CNN, and DQN containment."""
+        if not hasattr(self, "_flow_count"):
+            self._flow_count = 0
+        self._flow_count += 1
+
         src_ip = flow.get("src_ip", "0.0.0.0")
+        dst_ip = flow.get("dst_ip", "0.0.0.0")
         
         # 1. Module 1: Preprocessor & Spike Encoder
         feature_vector_16 = self.flow_aggregator.to_feature_vector(flow)
@@ -128,7 +135,6 @@ class CortixDaemon:
         z_score = snn_result["z_score"]
 
         # Prepare 40 dimensions list for LSTM-CNN feature parsing
-        # (For prototype inference, pad feature vector 16 to 40 features)
         feature_vector_40 = np.zeros(40, dtype=np.float32)
         feature_vector_40[:16] = feature_vector_16
 
@@ -136,6 +142,18 @@ class CortixDaemon:
         classifier_result = self.classifier.predict_flow(src_ip, feature_vector_40)
         predicted_class = classifier_result["class"]
         confidence = classifier_result["confidence"]
+
+        # Log live flow progress to stdout every 10 flows
+        if self._flow_count % 10 == 0 or self._flow_count == 1:
+            logger.info(
+                "Live Flow #%d [%s → %s] | SNN z-score: %.2f | Class: %s (%.1f%%)",
+                self._flow_count,
+                src_ip,
+                dst_ip,
+                z_score,
+                predicted_class,
+                confidence * 100,
+            )
 
         # Check anomaly or threat triggers
         is_anomaly = snn_result["is_anomaly"] or classifier_result["is_threat"]
@@ -206,7 +224,7 @@ class CortixDaemon:
 
                 # 5. Trigger Async Module 6: Attacker Attribution
                 asyncio.run_coroutine_threadsafe(
-                    self._trigger_attribution(src_ip, threat.id, alert_payload), self.loop
+                    self._trigger_attribution(src_ip, cast(int, threat.id), alert_payload), self.loop
                 )
 
             except Exception as exc:
@@ -224,7 +242,7 @@ class CortixDaemon:
             # Check if profile already exists for IP
             existing = db.query(AttackerProfile).filter(AttackerProfile.ip == src_ip).first()
             if existing:
-                existing.last_seen = time.time()
+                cast(Any, existing).last_seen = datetime.now(timezone.utc)
                 existing.abuse_score = profile["abuse_score"]
                 existing.threat_level = profile["threat_level"]
                 attacker_id = existing.id

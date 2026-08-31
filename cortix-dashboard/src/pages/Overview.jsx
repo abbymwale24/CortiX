@@ -1,30 +1,55 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { Shield, AlertOctagon, Activity, Wifi } from "lucide-react";
+import PageHeader from "../components/PageHeader";
+
+const API_BASE = "http://localhost:8000";
 
 function Overview({ liveAlerts }) {
   const [stats, setStats] = useState(null);
   const [threats, setThreats] = useState([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(new Date());
+
+  const fetchData = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      const [threatsRes, statsRes] = await Promise.all([
+        axios.get(`${API_BASE}/api/threats?limit=5`),
+        axios.get(`${API_BASE}/api/metrics/summary`),
+      ]);
+      setThreats(threatsRes.data);
+      setStats(statsRes.data);
+      setLastRefreshed(new Date());
+    } catch (err) {
+      console.error("Failed to fetch overview data:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
-    // Fetch recent threats
-    axios.get("http://localhost:8000/api/threats?limit=5")
-      .then((res) => setThreats(res.data))
-      .catch(() => {});
+    fetchData();
+    const interval = setInterval(fetchData, 5000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
-    // Fetch real summary stats
-    axios.get("http://localhost:8000/api/metrics/summary")
-      .then((res) => setStats(res.data))
-      .catch(() => {});
-  }, [liveAlerts]);
+  // Re-fetch when WS live alert arrives
+  useEffect(() => {
+    if (liveAlerts && liveAlerts.length > 0) {
+      fetchData();
+    }
+  }, [liveAlerts, fetchData]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
-      {/* Page Header */}
-      <div>
-        <h2 style={{ fontSize: "28px", fontWeight: "bold", margin: "0 0 8px 0" }}>Security Center</h2>
-        <p style={{ color: "#9ca3af", margin: 0 }}>Neuro-inspired active firewall telemetry and brain state overview.</p>
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: "28px" }}>
+      <PageHeader
+        title="Security Center"
+        subtitle="Neuro-inspired active firewall telemetry and brain state overview."
+        onRefresh={fetchData}
+        isRefreshing={isRefreshing}
+        lastRefreshed={lastRefreshed}
+      />
 
       {/* Summary Cards Row */}
       <div style={{
@@ -107,7 +132,7 @@ function Overview({ liveAlerts }) {
             </thead>
             <tbody>
               {threats.map((threat, idx) => (
-                <tr key={idx} style={{ borderBottom: "1px solid #1f2937", color: "#d1d5db" }}>
+                <tr key={threat.id || idx} style={{ borderBottom: "1px solid #1f2937", color: "#d1d5db" }}>
                   <td style={{ padding: "16px" }}>{new Date(threat.timestamp || Date.now()).toLocaleTimeString()}</td>
                   <td style={{ padding: "16px", fontWeight: "bold" }}>{threat.src_ip}</td>
                   <td style={{ padding: "16px" }}>

@@ -27,7 +27,7 @@ class CortixConfig:
     NUM_INPUT_NEURONS: int = 512
     RECEPTIVE_FIELD_CENTERS: int = 20  # Gaussian receptive fields per feature
     SPIKE_RATE_WINDOW_MS: float = 50.0
-    THALAMIC_GATE_ENABLED: bool = True
+    THALAMIC_GATE_ENABLED: bool = os.getenv("CORTIX_THALAMIC_GATE", "true").lower() in ("true", "1", "yes")
     THALAMIC_ZERO_SUPPRESSION_EPS: float = 1e-4
 
     # ──────────────────────────────────────────────
@@ -52,6 +52,14 @@ class CortixConfig:
     #                 where attacks produce familiarity *drops*)
     ANOMALY_MODE: str = "upper"
     SLIDING_WINDOW_SIZE: int = 1000
+    # SNN scoring mode:
+    #   "reconstruction" — anomaly signal = ||x - W.T @ winners||² (preferred;
+    #                      normal data reconstructs well, anomalies don't)
+    #   "winner_energy"  — original: winner_energy × (1 + concentration)
+    SNN_SCORING_MODE: str = "reconstruction"
+    # Thalamic gate: how many nearest receptive-field centres fire per feature.
+    # 1 = original ultra-sparse mode, 3 = multi-spike (better discriminability).
+    THALAMIC_TOP_K: int = 3
     # ── Reproducibility ──
     # Default seed for HebbianEnsemble weight initialisation.
     # - Read from CORTIX_SEED env var if set, so judges can watch you

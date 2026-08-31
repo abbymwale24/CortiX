@@ -5,6 +5,7 @@ import {
   ResponsiveContainer, LineChart, Line,
 } from "recharts";
 import { Brain, Zap, Activity, Eye } from "lucide-react";
+import PageHeader from "../components/PageHeader";
 
 const API_BASE = "http://localhost:8000";
 
@@ -13,36 +14,33 @@ function BrainView() {
   const [heatmap, setHeatmap] = useState(null);
   const [history, setHistory] = useState([]);
   const [selectedModule, setSelectedModule] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(new Date());
 
-  const fetchWeights = useCallback(() => {
-    axios.get(`${API_BASE}/api/brain/weights`)
-      .then((res) => setWeights(res.data))
-      .catch(() => {});
-  }, []);
-
-  const fetchHeatmap = useCallback(() => {
-    axios.get(`${API_BASE}/api/brain/weights/heatmap?module=${selectedModule}`)
-      .then((res) => setHeatmap(res.data))
-      .catch(() => {});
+  const fetchBrainData = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      const [wRes, hRes, histRes] = await Promise.all([
+        axios.get(`${API_BASE}/api/brain/weights`),
+        axios.get(`${API_BASE}/api/brain/weights/heatmap?module=${selectedModule}`),
+        axios.get(`${API_BASE}/api/brain/weights/history`),
+      ]);
+      setWeights(wRes.data);
+      setHeatmap(hRes.data);
+      setHistory(histRes.data);
+      setLastRefreshed(new Date());
+    } catch (err) {
+      console.error("Failed to fetch brain state data:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
   }, [selectedModule]);
 
-  const fetchHistory = useCallback(() => {
-    axios.get(`${API_BASE}/api/brain/weights/history`)
-      .then((res) => setHistory(res.data))
-      .catch(() => {});
-  }, []);
-
   useEffect(() => {
-    fetchWeights();
-    fetchHeatmap();
-    fetchHistory();
-    const interval = setInterval(() => {
-      fetchWeights();
-      fetchHeatmap();
-      fetchHistory();
-    }, 5000);
+    fetchBrainData();
+    const interval = setInterval(fetchBrainData, 5000);
     return () => clearInterval(interval);
-  }, [fetchWeights, fetchHeatmap, fetchHistory]);
+  }, [fetchBrainData]);
 
   // Prepare histogram data for the selected module
   const histogramData = weights?.modules?.[selectedModule]
@@ -65,15 +63,13 @@ function BrainView() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "28px" }}>
-      {/* Header */}
-      <div>
-        <h2 style={{ fontSize: "28px", fontWeight: "bold", margin: "0 0 8px 0" }}>
-          Brain State Visualization
-        </h2>
-        <p style={{ color: "#9ca3af", margin: 0 }}>
-          Live synaptic weight evolution across the Hebbian SNN ensemble.
-        </p>
-      </div>
+      <PageHeader
+        title="Brain State Visualization"
+        subtitle="Live synaptic weight evolution across the Hebbian SNN ensemble."
+        onRefresh={fetchBrainData}
+        isRefreshing={isRefreshing}
+        lastRefreshed={lastRefreshed}
+      />
 
       {/* Summary Stats Cards */}
       {weights && (
@@ -316,22 +312,17 @@ function StatCard({ icon, label, value, color }) {
 /* ── Heatmap Color Function ── */
 
 function heatmapColor(value) {
-  // Map 0..1 to a perceptual color scale: dark purple → red → yellow
   const v = Math.max(0, Math.min(1, value));
   if (v < 0.25) {
-    // Dark indigo to purple
     const t = v / 0.25;
     return `rgb(${Math.round(30 + 29 * t)}, ${Math.round(27 + 0 * t)}, ${Math.round(75 + 25 * t)})`;
   } else if (v < 0.5) {
-    // Purple to dark red
     const t = (v - 0.25) / 0.25;
     return `rgb(${Math.round(59 + 65 * t)}, ${Math.round(27 - 12 * t)}, ${Math.round(100 - 82 * t)})`;
   } else if (v < 0.75) {
-    // Dark red to red
     const t = (v - 0.5) / 0.25;
     return `rgb(${Math.round(124 + 96 * t)}, ${Math.round(15 + 30 * t)}, ${Math.round(18 + 0 * t)})`;
   } else {
-    // Red to amber/yellow
     const t = (v - 0.75) / 0.25;
     return `rgb(${Math.round(220 + 31 * t)}, ${Math.round(45 + 146 * t)}, ${Math.round(18 + 18 * t)})`;
   }

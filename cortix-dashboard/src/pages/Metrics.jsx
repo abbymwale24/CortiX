@@ -1,22 +1,43 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import PageHeader from "../components/PageHeader";
+
+const API_BASE = "http://localhost:8000";
 
 function Metrics() {
   const [metrics, setMetrics] = useState([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(new Date());
 
-  useEffect(() => {
-    axios.get("http://localhost:8000/api/metrics")
-      .then((res) => setMetrics(res.data))
-      .catch(() => {});
+  const fetchMetrics = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      const res = await axios.get(`${API_BASE}/api/metrics`);
+      setMetrics(res.data);
+      setLastRefreshed(new Date());
+    } catch (err) {
+      console.error("Failed to fetch metrics:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
   }, []);
 
+  useEffect(() => {
+    fetchMetrics();
+    const interval = setInterval(fetchMetrics, 5000);
+    return () => clearInterval(interval);
+  }, [fetchMetrics]);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
-      <div>
-        <h2 style={{ fontSize: "28px", fontWeight: "bold", margin: "0 0 8px 0" }}>System Performance Charts</h2>
-        <p style={{ color: "#9ca3af", margin: 0 }}>Real-time False Positive Rate (FPR), processing latency, and packet throughput timelines.</p>
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: "28px" }}>
+      <PageHeader
+        title="System Performance Charts"
+        subtitle="Real-time False Positive Rate (FPR), processing latency, and packet throughput timelines."
+        onRefresh={fetchMetrics}
+        isRefreshing={isRefreshing}
+        lastRefreshed={lastRefreshed}
+      />
 
       <div style={{
         backgroundColor: "#11141e",

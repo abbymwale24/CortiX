@@ -44,16 +44,16 @@ class HebbianEnsemble:
     M activations per event dumped into a shared window.
     """
 
-    def __init__(self, M: Optional[int] = None, seed: Optional[int] = None):
+    def __init__(self, M: Optional[int] = None, seed: Optional[int] = None, n_input: Optional[int] = None):
         self.M = M or config.HEBBIAN_MODULES
-        self.n_input = config.NEURONS_PER_MODULE
-        self.n_hidden = config.HIDDEN_NEURONS
+        self.n_input = n_input or config.NEURONS_PER_MODULE
+        # Auto-scale hidden neurons to maintain ~2:1 compression with input.
+        # For 512 input → max(256, 256) = 256 (unchanged, matches synthetic).
+        # For 952 input → max(256, 476) = 476 (was 256, too compressed).
+        self.n_hidden = max(config.HIDDEN_NEURONS, self.n_input // 2)
         self.seed = config.RANDOM_SEED if seed is None else seed
 
         # ── Spawn M independent, decorrelated child seeds ──
-        # SeedSequence.spawn() is the numpy-recommended way to get multiple
-        # independent streams from one master seed — safer than seed+i,
-        # which can correlate for some RNG algorithms.
         ss = np.random.SeedSequence(self.seed)
         child_seeds = ss.spawn(self.M)
 
@@ -90,8 +90,10 @@ class HebbianEnsemble:
         self.total_processed = 0
 
         logger.info(
-            "HebbianEnsemble initialised with M=%d independent modules (seed=%s)",
+            "HebbianEnsemble initialised with M=%d modules (%d→%d, seed=%s)",
             self.M,
+            self.n_input,
+            self.n_hidden,
             self.seed,
         )
 
@@ -183,6 +185,19 @@ class HebbianEnsemble:
         """Return p50 and p99 hot-path latencies."""
         return self._latency_scorer.get_latency_stats()
 
+    def calibrate_thresholds(self, percentile: float = 95.0):
+        """
+        Calibrate all per-module scorer thresholds from warmup z-scores.
+
+        Call this ONCE after warmup (benign-only learning phase) to set
+        each scorer's z-threshold to the given percentile of the observed
+        benign z-score distribution.  Default p95 balances detection recall
+        (≥70%) with manageable FPR for the hybrid classifier to clean up.
+        """
+        for i, scorer in enumerate(self.scorers):
+            scorer.calibrate_threshold(percentile=percentile)
+        logger.info("All %d module scorers calibrated (p%.1f)", self.M, percentile)
+
     def reset(self):
         """Reset all state."""
         for m in self.modules:
@@ -192,3 +207,4 @@ class HebbianEnsemble:
         self.metaplasticity.reset()
         self._latency_scorer.reset()
         self.total_processed = 0
+
