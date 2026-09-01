@@ -47,10 +47,11 @@ class CortixConfig:
     NEUROMODULATION_BASELINE: float = 0.1
     ANOMALY_Z_THRESHOLD: float = 3.5
     # Anomaly detection mode:
-    #   "upper"     — one-tailed: z > threshold flags anomaly (default, suits NSL-KDD)
-    #   "bilateral" — two-tailed: |z| > threshold flags anomaly (suits CICIDS2017
-    #                 where attacks produce familiarity *drops*)
-    ANOMALY_MODE: str = "upper"
+    #   "upper"     — one-tailed: z > threshold (attacks produce HIGHER activation)
+    #   "lower"     — one-tailed: z < threshold (attacks produce LOWER activation)
+    #   "bilateral" — two-tailed: |z| > threshold (attacks deviate in EITHER direction)
+    ANOMALY_MODE: str = os.getenv("CORTIX_ANOMALY_MODE", "upper")
+    ADAPTIVE_THRESHOLD: bool = True
     SLIDING_WINDOW_SIZE: int = 1000
     # SNN scoring mode:
     #   "reconstruction" — anomaly signal = ||x - W.T @ winners||² (preferred;

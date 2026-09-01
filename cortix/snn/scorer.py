@@ -3,6 +3,19 @@ CortiX Module 2 — Anomaly Scorer
 
 Robust z-score anomaly detection using Median Absolute Deviation (MAD).
 Scores each event relative to a sliding window baseline, per context.
+
+Anomaly modes
+-------------
+- "upper"     : anomaly if z >  threshold   (attacks produce HIGHER activation)
+- "lower"     : anomaly if z <  threshold   (attacks produce LOWER activation)
+- "bilateral" : anomaly if |z| > threshold  (attacks deviate in EITHER direction)
+
+Which mode is correct is an empirical property of the encoder/dataset
+combination, not a fixed assumption -- different encoder configs (e.g.
+thalamic top-k gating vs dense Gaussian coding) can flip which direction
+attacks actually deviate in. Measure with evaluation/direction_check.py
+before assuming "upper" (the historical default) is right for a given
+config.
 """
 
 import logging
@@ -52,9 +65,15 @@ class AnomalyScorer:
 
     Adaptive threshold calibration
     --------------------------------
-    After warmup, the scorer can calibrate its z-threshold to the
-    p99.7 of observed benign z-scores, adapting to the actual
+    After warmup, the scorer can calibrate its z-threshold from the
+    observed benign warmup z-score distribution, adapting to the actual
     activation distribution rather than relying on a static config value.
+    Calibration direction matches anomaly_mode:
+      - "upper"     -> threshold = high percentile  (e.g. p95: only the
+                       top 5% of benign warmup would be flagged)
+      - "lower"     -> threshold = low percentile   (e.g. p5: only the
+                       bottom 5% of benign warmup would be flagged)
+      - "bilateral" -> threshold = high percentile of |z|
     """
 
     def __init__(
@@ -63,13 +82,18 @@ class AnomalyScorer:
         z_threshold: Optional[float] = None,
         epsilon: float = 1e-6,
         anomaly_mode: Optional[str] = None,
-        adaptive_threshold: bool = True,
+        adaptive_threshold: Optional[bool] = None,
     ):
         self.window_size = window_size or config.SLIDING_WINDOW_SIZE
         self.z_threshold = z_threshold or config.ANOMALY_Z_THRESHOLD
         self.epsilon = epsilon
         self.anomaly_mode = anomaly_mode or config.ANOMALY_MODE
-        self.adaptive_threshold = adaptive_threshold
+        self.adaptive_threshold = config.ADAPTIVE_THRESHOLD if adaptive_threshold is None else adaptive_threshold
+
+        if self.anomaly_mode not in ("upper", "lower", "bilateral"):
+            raise ValueError(
+                f"anomaly_mode must be 'upper', 'lower', or 'bilateral', got {self.anomaly_mode!r}"
+            )
 
         # Global baseline window
         self._global_window = WindowBuffer(capacity=self.window_size)
@@ -90,23 +114,37 @@ class AnomalyScorer:
         """
         Calibrate z-threshold from the warmup z-score distribution.
 
-        Sets the threshold so that only (100 - percentile)% of the
-        benign warmup traffic would be flagged as anomalous.
+        `percentile` is interpreted as "how selective the threshold should
+        be", regardless of mode -- e.g. percentile=95 always means "only
+        ~5% of benign warmup traffic would be flagged", whichever
+        direction that 5% sits in:
+          - upper:     threshold = p{percentile}       of z      (top tail)
+          - lower:     threshold = p{100-percentile}    of z      (bottom tail)
+          - bilateral: threshold = p{percentile}        of |z|    (both tails)
         """
+        if not self.adaptive_threshold:
+            return
+
         if len(self._warmup_z_scores) < 50:
             return  # Not enough data to calibrate
         z_arr = np.array(self._warmup_z_scores)
+
         if self.anomaly_mode == "bilateral":
-            # Two-tailed: use absolute z-scores
             calibrated = float(np.percentile(np.abs(z_arr), percentile))
-        else:
-            # One-tailed: use raw z-scores
+            # Floor at 1.5 to prevent a degenerately small threshold
+            calibrated = max(calibrated, 1.5)
+        elif self.anomaly_mode == "lower":
+            calibrated = float(np.percentile(z_arr, 100.0 - percentile))
+            # Ceiling at -1.5 to prevent a degenerately small (near-zero
+            # or positive) threshold -- mirror of the "upper" floor.
+            calibrated = min(calibrated, -1.5)
+        else:  # "upper"
             calibrated = float(np.percentile(z_arr, percentile))
-        # Floor at 1.5 to prevent degenerate thresholds
-        calibrated = max(calibrated, 1.5)
+            calibrated = max(calibrated, 1.5)
+
         logger.info(
-            "Adaptive threshold calibrated: %.3f → %.3f (from %d warmup z-scores, p%.1f)",
-            self.z_threshold, calibrated, len(self._warmup_z_scores), percentile,
+            "Adaptive threshold calibrated (mode=%s): %.3f → %.3f (from %d warmup z-scores, p%.1f)",
+            self.anomaly_mode, self.z_threshold, calibrated, len(self._warmup_z_scores), percentile,
         )
         self.z_threshold = calibrated
         self._calibrated = True
@@ -168,10 +206,18 @@ class AnomalyScorer:
 
         # Anomaly check depends on mode:
         #   "upper"     — one-tailed: only positive spikes are anomalous
+        #                 (attacks produce HIGHER activation than benign)
+        #   "lower"     — one-tailed: only negative spikes are anomalous
+        #                 (attacks produce LOWER activation than benign —
+        #                 empirically the case for some sparse/gated
+        #                 encoder configs; verify with direction_check.py
+        #                 before assuming "upper" is correct)
         #   "bilateral" — two-tailed: both spikes AND drops are anomalous
         if self.anomaly_mode == "bilateral":
             is_anomaly = abs(z) > self.z_threshold
-        else:
+        elif self.anomaly_mode == "lower":
+            is_anomaly = z < self.z_threshold
+        else:  # "upper"
             is_anomaly = z > self.z_threshold
 
         return {
@@ -196,11 +242,15 @@ class AnomalyScorer:
         Returns:
             dict with consensus decision and per-module results.
         """
-        thresh = threshold or self.z_threshold
+        # NOTE: `threshold` override here does not currently change
+        # self.anomaly_mode's comparison direction inside score() -- it
+        # only overrides self.z_threshold's numeric value if you wire it
+        # through. Left as-is to match prior behaviour; not used by the
+        # main ensemble path (HebbianEnsemble calls score() directly).
         results = []
 
-        for score in module_scores:
-            result = self.score(score)
+        for module_score in module_scores:
+            result = self.score(module_score)
             results.append(result)
 
         # Count how many modules flag anomaly
@@ -245,4 +295,3 @@ class AnomalyScorer:
         self._latencies.clear()
         self._calibrated = False
         self._warmup_z_scores.clear()
-

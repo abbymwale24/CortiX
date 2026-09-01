@@ -1,37 +1,3 @@
-"""
-CortiX — Threshold / Separability Diagnostic
-
-Answers the question the seed sweep raised: is 43.26% accuracy / 0.64%
-detection a THRESHOLD problem (fixable by picking a different
-ANOMALY_Z_THRESHOLD) or a SEPARABILITY problem (the SNN's activation
-signal doesn't distinguish benign from attack traffic well enough, no
-matter where you cut)?
-
-This is a single LIVE run (seed sweep already proved seed doesn't matter,
-so one run's z-scores are representative). Nothing here is hardcoded or
-simulated -- it reuses evaluate_snn() exactly as benchmark.py does, then
-does extra analysis on the real z_scores/y_true it returns.
-
-Usage:
-    PYTHONPATH=. .venv/bin/python evaluation/threshold_diagnostic.py \
-        --dataset nslkdd --tune_file evaluation/tuned_params_nslkdd.json --seed 42
-
-Output:
-    1. AUC of z_scores vs ground truth (the ceiling on what ANY threshold
-       can achieve with this representation).
-    2. Percentile breakdown of z-scores for benign vs attack samples
-       (where's the overlap?).
-    3. A full threshold sweep: for each candidate threshold, the resulting
-       accuracy / detection / FPR / F1, with the acceptance-criteria
-       columns flagged PASS/FAIL exactly like benchmark.py's report.
-    4. The best achievable threshold under two objectives:
-         (a) max F1
-         (b) tightest threshold that still keeps FPR <= 0.3%, reporting
-             what detection rate that actually buys you.
-    5. Saves a z-score distribution plot (benign vs attack histograms)
-       and a threshold-sweep curve, evaluation/results/threshold_diagnostic.png
-"""
-
 import os
 import json
 import argparse
@@ -49,11 +15,33 @@ from evaluation.benchmark import (
     evaluate_snn,
     generate_synthetic_flows,
     load_nslkdd_dataset,
-    load_cicids2017_dataset,
 )
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cortix.evaluation.threshold_diagnostic")
+
+
+def mode_aware_score(z_scores: np.ndarray, mode: str) -> np.ndarray:
+    """
+    Return a 'higher = more anomalous' score array regardless of mode,
+    so downstream AUC/sweep logic can stay mode-agnostic after this call.
+    """
+    if mode == "lower":
+        return -z_scores
+    elif mode == "bilateral":
+        return np.abs(z_scores)
+    else:  # "upper"
+        return z_scores
+
+
+def predict_anomaly(z_scores: np.ndarray, threshold: float, mode: str) -> np.ndarray:
+    """Apply the SAME decision rule the live AnomalyScorer uses for this mode."""
+    if mode == "lower":
+        return (z_scores < threshold).astype(int)
+    elif mode == "bilateral":
+        return (np.abs(z_scores) > threshold).astype(int)
+    else:  # "upper"
+        return (z_scores > threshold).astype(int)
 
 
 def load_dataset(dataset: str):
@@ -72,20 +60,6 @@ def load_dataset(dataset: str):
             context_keys=None,
             warmup_context_keys=None,
         )
-    elif dataset == "cicids2017":
-        X_test_sel, X_test_raw, y_test, y_test_class = load_cicids2017_dataset(max_samples=0)
-        # Take up to 10000 benign samples for warmup (same as NSL-KDD)
-        benign_indices = np.where(y_test == 0)[0]
-        warmup_n = min(10000, len(benign_indices))
-        warmup_features = X_test_sel[benign_indices[:warmup_n]]
-        return dict(
-            features=X_test_sel,
-            labels_binary=y_test,
-            labels_class=y_test_class,
-            warmup_features=warmup_features,
-            context_keys=None,
-            warmup_context_keys=None,
-        )
     else:
         features, labels_binary, labels_class = generate_synthetic_flows(
             num_benign=3000, num_attack=1000
@@ -96,19 +70,14 @@ def load_dataset(dataset: str):
         )
 
 
-def sweep_thresholds(z_scores: np.ndarray, y_true: np.ndarray, n_points: int = 60) -> list[dict]:
-    """Evaluate detection/FPR/F1/accuracy across a range of candidate thresholds.
-    
-    When bilateral=True, uses |z| > threshold (two-tailed) instead of z > threshold.
-    """
-    bilateral = config.ANOMALY_MODE == "bilateral"
-    signal = np.abs(z_scores) if bilateral else z_scores
-    lo, hi = np.percentile(signal, 1), np.percentile(signal, 99.5)
+def sweep_thresholds(z_scores: np.ndarray, y_true: np.ndarray, mode: str, n_points: int = 60) -> list[dict]:
+    """Evaluate detection/FPR/F1/accuracy across candidate thresholds, in the correct direction for `mode`."""
+    lo, hi = np.percentile(z_scores, 1), np.percentile(z_scores, 99.5)
     candidates = np.linspace(lo, hi, n_points)
 
     rows = []
     for thresh in candidates:
-        y_pred = (signal > thresh).astype(int)
+        y_pred = predict_anomaly(z_scores, thresh, mode)
         tp = int(np.sum((y_true == 1) & (y_pred == 1)))
         tn = int(np.sum((y_true == 0) & (y_pred == 0)))
         fp = int(np.sum((y_true == 0) & (y_pred == 1)))
@@ -126,7 +95,7 @@ def sweep_thresholds(z_scores: np.ndarray, y_true: np.ndarray, n_points: int = 6
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="nslkdd", choices=["nslkdd", "cicids2017", "synthetic"])
+    parser.add_argument("--dataset", type=str, default="nslkdd", choices=["nslkdd", "synthetic"])
     parser.add_argument("--tune_file", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="evaluation/results")
@@ -145,6 +114,9 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
 
+    mode = config.ANOMALY_MODE
+    logger.info("Using ANOMALY_MODE=%s for scoring/sweep direction", mode)
+
     data = load_dataset(args.dataset)
     logger.info("Running live SNN evaluation (seed=%d) to collect real z-scores...", args.seed)
 
@@ -161,21 +133,19 @@ def main():
     z_scores = result["z_scores"]
     y_true = result["y_true"]
 
-    # For bilateral mode, use |z| as the scoring signal
-    bilateral = config.ANOMALY_MODE == "bilateral"
-    scoring_signal = np.abs(z_scores) if bilateral else z_scores
-
-    # ── 1. AUC: the ceiling on what ANY threshold can achieve ──
-    auc = float(roc_auc_score(y_true, scoring_signal))
+    # ── 1. AUC: the ceiling on what ANY threshold can achieve, IN THIS MODE'S DIRECTION ──
+    scored = mode_aware_score(z_scores, mode)
+    auc = float(roc_auc_score(y_true, scored))
 
     print("\n" + "=" * 100)
-    print("                    SEPARABILITY CHECK — z-score vs ground truth")
+    print(f"                    SEPARABILITY CHECK — z-score vs ground truth (mode={mode})")
     print("=" * 100)
     print(f"AUC = {auc:.4f}")
     if auc < 0.55:
-        print("  -> Essentially NO separation. z-scores carry almost no signal about")
-        print("     benign vs attack. No threshold choice will fix this -- the SNN's")
-        print("     representation/warmup/config needs to change, not the cutoff.")
+        print("  -> Essentially NO separation in this direction. z-scores carry almost no")
+        print("     signal about benign vs attack under this mode. No threshold choice will")
+        print("     fix this -- try a different ANOMALY_MODE (see direction_check.py) or")
+        print("     change the SNN's representation/warmup/config.")
     elif auc < 0.70:
         print("  -> Weak separation. Some signal exists; threshold tuning will help")
         print("     somewhat, but hitting 99% detection at 0.3% FPR is unlikely without")
@@ -189,7 +159,8 @@ def main():
         print("     a threshold-selection problem, not a representation problem.")
     print("=" * 100)
 
-    # ── 2. Percentile breakdown by class ──
+    # ── 2. Percentile breakdown by class (raw z, not mode-transformed --
+    #      this is about the underlying activation distribution, independent of mode) ──
     benign_z = z_scores[y_true == 0]
     attack_z = z_scores[y_true == 1]
 
@@ -198,21 +169,24 @@ def main():
         print(f"{name:<10} n={len(arr):>6} | p5={p[0]:>8.3f} p25={p[1]:>8.3f} "
               f"median={p[2]:>8.3f} p75={p[3]:>8.3f} p95={p[4]:>8.3f} p99={p[5]:>8.3f}")
 
-    print("\nZ-SCORE DISTRIBUTION BY CLASS")
+    print("\nZ-SCORE DISTRIBUTION BY CLASS (raw z, mode-independent)")
     print("-" * 100)
     pct_row("BENIGN", benign_z)
     pct_row("ATTACK", attack_z)
-    print(f"\nCurrent configured threshold: {config.ANOMALY_Z_THRESHOLD}")
-    print(f"Benign z-scores exceeding current threshold (-> false positives): "
-          f"{np.mean(benign_z > config.ANOMALY_Z_THRESHOLD) * 100:.4f}%")
-    print(f"Attack z-scores exceeding current threshold (-> true positives):  "
-          f"{np.mean(attack_z > config.ANOMALY_Z_THRESHOLD) * 100:.4f}%")
 
-    # ── 3. Full threshold sweep ──
-    sweep = sweep_thresholds(z_scores, y_true, n_points=60)
+    print(f"\nCurrent configured threshold: {config.ANOMALY_Z_THRESHOLD}  (mode={mode})")
+    benign_flagged = predict_anomaly(benign_z, config.ANOMALY_Z_THRESHOLD, mode)
+    attack_flagged = predict_anomaly(attack_z, config.ANOMALY_Z_THRESHOLD, mode)
+    print(f"Benign z-scores flagged as anomalous (-> false positives): "
+          f"{np.mean(benign_flagged) * 100:.4f}%")
+    print(f"Attack z-scores flagged as anomalous (-> true positives):  "
+          f"{np.mean(attack_flagged) * 100:.4f}%")
+
+    # ── 3. Full threshold sweep, mode-aware ──
+    sweep = sweep_thresholds(z_scores, y_true, mode, n_points=60)
 
     print("\n" + "=" * 100)
-    print("THRESHOLD SWEEP (sample of points; full data in JSON)")
+    print(f"THRESHOLD SWEEP (mode={mode}; sample of points; full data in JSON)")
     print("=" * 100)
     print(f"{'Threshold':>10} | {'Accuracy':>9} | {'Detection':>10} | {'FPR':>9} | {'F1':>7}")
     print("-" * 100)
@@ -236,9 +210,8 @@ def main():
               f"fpr={best_under_fpr['fpr']*100:.4f}%  f1={best_under_fpr['f1_score']:.4f}")
         if best_under_fpr["detection_rate"] < 0.99:
             print("  -> Even the best FPR<=0.3% threshold does NOT reach 99% detection.")
-            print("     Acceptance criteria as currently defined are not jointly achievable")
-            print("     with this representation. Consider: more warmup samples, tuning eta,")
-            print("     more hidden neurons, or relaxing which criterion is primary.")
+            print("     Consider: more warmup samples, tuning eta, more hidden neurons,")
+            print("     a different encoder config, or relaxing which criterion is primary.")
     else:
         print("No threshold in the swept range achieves FPR <= 0.3%.")
     print("=" * 100 + "\n")
@@ -249,10 +222,10 @@ def main():
     axes[0].hist(benign_z, bins=60, alpha=0.6, label="Benign", color="#3b82f6", density=True)
     axes[0].hist(attack_z, bins=60, alpha=0.6, label="Attack", color="#ef4444", density=True)
     axes[0].axvline(config.ANOMALY_Z_THRESHOLD, color="black", linestyle="--",
-                     label=f"Current threshold ({config.ANOMALY_Z_THRESHOLD})")
-    axes[0].set_xlabel("z-score")
+                     label=f"Current threshold ({config.ANOMALY_Z_THRESHOLD:.3f}, mode={mode})")
+    axes[0].set_xlabel("z-score (raw)")
     axes[0].set_ylabel("Density")
-    axes[0].set_title(f"Z-Score Distribution by Class (AUC={auc:.3f})", fontweight="bold")
+    axes[0].set_title(f"Z-Score Distribution by Class (AUC={auc:.3f}, mode={mode})", fontweight="bold")
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
@@ -267,7 +240,7 @@ def main():
     axes[1].axvline(config.ANOMALY_Z_THRESHOLD, color="black", linestyle="--", alpha=0.5)
     axes[1].set_xlabel("Threshold")
     axes[1].set_ylabel("%")
-    axes[1].set_title("Threshold Sweep", fontweight="bold")
+    axes[1].set_title(f"Threshold Sweep (mode={mode})", fontweight="bold")
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
 
@@ -279,6 +252,7 @@ def main():
 
     # Save raw sweep + summary JSON
     out = {
+        "anomaly_mode": mode,
         "auc": auc,
         "current_threshold": config.ANOMALY_Z_THRESHOLD,
         "best_f1": best_f1_row,

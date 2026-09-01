@@ -147,6 +147,7 @@ def main():
             config.ANOMALY_Z_THRESHOLD = t.get("z_threshold", t.get("threshold", config.ANOMALY_Z_THRESHOLD))
             config.HEBBIAN_LR = t.get("learning_rate", t.get("eta", config.HEBBIAN_LR))
             config.HIDDEN_NEURONS = t.get("hidden_neurons", t.get("hidden", config.HIDDEN_NEURONS))
+            config.ANOMALY_MODE = t.get("anomaly_mode", config.ANOMALY_MODE)
             logger.info("Loaded tuning config: %s", t)
 
     os.makedirs(args.output, exist_ok=True)

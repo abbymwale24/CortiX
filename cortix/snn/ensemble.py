@@ -73,6 +73,7 @@ class HebbianEnsemble:
             AnomalyScorer(
                 window_size=config.SLIDING_WINDOW_SIZE,
                 z_threshold=config.ANOMALY_Z_THRESHOLD,
+                adaptive_threshold=config.ADAPTIVE_THRESHOLD,
             )
             for _ in range(self.M)
         ]

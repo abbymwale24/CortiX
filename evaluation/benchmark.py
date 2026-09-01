@@ -177,7 +177,8 @@ def evaluate_snn(
             ensemble.process_event(spikes, learn=True, context_key=ck)
 
         # Calibrate thresholds from warmup z-score distribution
-        ensemble.calibrate_thresholds()
+        if config.ADAPTIVE_THRESHOLD:
+            ensemble.calibrate_thresholds()
         warmup_len = len(warmup_features)
         eval_indices = list(range(len(features)))
     else:
@@ -192,7 +193,8 @@ def evaluate_snn(
             ensemble.process_event(spikes, learn=True, context_key=ck)
 
         # Calibrate thresholds from warmup z-score distribution
-        ensemble.calibrate_thresholds()
+        if config.ADAPTIVE_THRESHOLD:
+            ensemble.calibrate_thresholds()
         eval_indices = list(range(len(features)))
         eval_set = set(eval_indices) - set(warmup_indices.tolist())
         eval_indices = sorted(eval_set)
@@ -939,6 +941,7 @@ def run_benchmark(
             config.METAPLASTICITY_ALPHA = t.get("meta_alpha", config.METAPLASTICITY_ALPHA)
             config.HIDDEN_NEURONS = t.get("hidden_neurons", t.get("hidden", config.HIDDEN_NEURONS))
             config.ANOMALY_MODE = t.get("anomaly_mode", config.ANOMALY_MODE)
+            config.ADAPTIVE_THRESHOLD = t.get("adaptive_threshold", config.ADAPTIVE_THRESHOLD)
             # Only let the tune file set the seed if the caller didn't
             # already pass one explicitly -- explicit arg always wins.
             if seed is None and "seed" in t:
