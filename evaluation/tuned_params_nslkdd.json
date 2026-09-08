@@ -1,7 +1,7 @@
 {
   "hidden": 256,
   "eta": 0.0001,
-  "threshold": 0.231,
+  "threshold": 0.271,
   "anomaly_mode": "lower",
   "adaptive_threshold": false
 }
