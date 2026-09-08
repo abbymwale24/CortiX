@@ -41,7 +41,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cortix.evaluation.hybrid_threshold_diagnostic")
 
 
-def collect_benign_probs(snn_results: dict, classifier_features: np.ndarray,
+def collect_benign_probs(y_pred_snn: np.ndarray, classifier_features: np.ndarray,
                           benign_idx: int, model_path: str) -> tuple[np.ndarray, np.ndarray]:
     """
     Run Stage 2 inference once over every SNN-flagged event and return:
@@ -70,7 +70,6 @@ def collect_benign_probs(snn_results: dict, classifier_features: np.ndarray,
     model.load_state_dict(ckpt)
     model.eval()
 
-    y_pred_snn = snn_results["y_pred"]
     n_classifier = len(classifier_features)
 
     flagged_indices = np.where(y_pred_snn == 1)[0]
@@ -148,6 +147,8 @@ def main():
             config.HEBBIAN_LR = t.get("learning_rate", t.get("eta", config.HEBBIAN_LR))
             config.HIDDEN_NEURONS = t.get("hidden_neurons", t.get("hidden", config.HIDDEN_NEURONS))
             config.ANOMALY_MODE = t.get("anomaly_mode", config.ANOMALY_MODE)
+            if "adaptive_threshold" in t:
+                config.ADAPTIVE_THRESHOLD = t.get("adaptive_threshold", config.ADAPTIVE_THRESHOLD)
             logger.info("Loaded tuning config: %s", t)
 
     os.makedirs(args.output, exist_ok=True)
@@ -179,18 +180,22 @@ def main():
         logger.error("Could not resolve BENIGN class index.")
         return
 
-    model_path = config.MODEL_PATH_NSLKDD
+    model_path = "models/lstm_cnn_nslkdd_finetuned.pt"
     if not os.path.exists(model_path):
         logger.error("No checkpoint at %s -- train Stage 2 first.", model_path)
         return
 
     # 3. Collect real benign_prob for every SNN-flagged event, ONCE
-    flagged_indices, benign_probs = collect_benign_probs(
-        snn_results, classifier_features, benign_idx, model_path
-    )
-
     y_true = snn_results["y_true"]
-    y_pred_snn = snn_results["y_pred"]
+    
+    if config.ANOMALY_MODE == "lower":
+        y_pred_snn = (snn_results["z_scores"] <= config.ANOMALY_Z_THRESHOLD).astype(int)
+    else:
+        y_pred_snn = (snn_results["z_scores"] >= config.ANOMALY_Z_THRESHOLD).astype(int)
+
+    flagged_indices, benign_probs = collect_benign_probs(
+        y_pred_snn, classifier_features, benign_idx, model_path
+    )
 
     # ── Baseline (SNN alone) for reference ──
     snn_fp = int(np.sum((y_true == 0) & (y_pred_snn == 1)))

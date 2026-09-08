@@ -27,8 +27,8 @@ class PrototypeConsolidator:
 
     def __init__(self, ensemble: HebbianEnsemble):
         self.ensemble = ensemble
-        self.n_input = config.NEURONS_PER_MODULE
-        self.n_hidden = config.HIDDEN_NEURONS
+        self.n_input = ensemble.n_input
+        self.n_hidden = ensemble.n_hidden
 
     def consolidate(self, prune_threshold: float = 0.05) -> dict:
         """
@@ -89,6 +89,7 @@ class PrototypeConsolidator:
             total_pruned_synapses += num_pruned
 
             # Re-normalise to preserve activity scale
+            np.clip(W, 0.0, 1.0, out=W)
             row_sums = np.sum(W, axis=1, keepdims=True)
             row_sums = np.where(row_sums < 1e-8, 1.0, row_sums)
             W /= row_sums

@@ -93,6 +93,13 @@ class HebbianModule:
 
         # Forward-pass counter (used for logging / warmup gating only).
         self._learn_count: int = 0
+        
+        # ── Ensemble Diversity: Static Feature Masking ──
+        # Each module drops a random subset of input features permanently.
+        # This breaks Oja convergence invariance and forces modules to learn
+        # different PCA subspaces, making the ensemble's reconstruction scores diverse.
+        p_keep = 1.0 - config.ENSEMBLE_FEATURE_DROPOUT
+        self.feature_mask = self._rng.binomial(1, p_keep, size=self.n_input).astype(np.float32)
 
         logger.info(
             "HebbianModule [%d] initialised: %d input → %d hidden (seed=%s)",
@@ -126,9 +133,13 @@ class HebbianModule:
                   "reconstruction": input-space reconstruction error
                   "winner_energy":  winner_energy × (1 + concentration)
         """
+        # ── Apply Static Feature Mask ──
+        # Zero out the permanently dropped features for this module.
+        x_masked = x * self.feature_mask
+        
         # ── Linear activation: W * x ──
-        # x is binary (0 or 1 spikes)
-        raw_activations = self.W @ x  # shape (n_hidden,)
+        # x_masked is binary (0 or 1 spikes)
+        raw_activations = self.W @ x_masked  # shape (n_hidden,)
 
         # ── k-Winner-Take-All ──
         k = max(1, int(self.n_hidden * config.KWTA_SPARSITY))
@@ -143,11 +154,14 @@ class HebbianModule:
             # x_hat = W.T @ winners is the network's "reconstruction" of the
             # input from its sparse hidden representation.
             # Cosine similarity is scale-invariant and measures directional
-            # alignment: familiar traffic → high similarity → low score.
+            # Anomaly score: 1 - similarity (higher = more anomalous)
+            # We measure reconstruction similarity only against the *visible* features.
             x_hat = self.W.T @ winners          # (n_input,)
-            dot = float(np.dot(x, x_hat))
-            norm_x = float(np.linalg.norm(x)) + 1e-8
-            norm_xhat = float(np.linalg.norm(x_hat)) + 1e-8
+            x_hat_masked = x_hat * self.feature_mask
+            
+            dot = float(np.dot(x_masked, x_hat_masked))
+            norm_x = float(np.linalg.norm(x_masked)) + 1e-8
+            norm_xhat = float(np.linalg.norm(x_hat_masked)) + 1e-8
             cosine_sim = dot / (norm_x * norm_xhat)
             # Anomaly score: 1 - similarity (higher = more anomalous)
             activation_magnitude = 1.0 - cosine_sim
@@ -162,7 +176,7 @@ class HebbianModule:
         if learn:
             self._learn_count += 1
 
-        if learn and np.any(post_spikes > 0) and np.any(x > 0):
+        if learn and np.any(post_spikes > 0) and np.any(x_masked > 0):
             # Effective learning rate modulated by Factor 3 (Neuromodulator)
             effective_eta = (
                 eta * neuromodulator_M
@@ -175,7 +189,7 @@ class HebbianModule:
                 m_scale = neuromodulator_M if config.NEUROMODULATION_ENABLED else 1.0
                 self.W, self.pre_trace, self.post_trace = stdp_update_fast(
                     self.W,
-                    pre_spikes=x,
+                    pre_spikes=x_masked,
                     post_spikes=post_spikes,
                     current_time=t,
                     pre_trace=self.pre_trace,
@@ -191,12 +205,12 @@ class HebbianModule:
                 self.W = oja_normalise(
                     self.W,
                     post_activation=winners,
-                    pre_input=x,
+                    pre_input=x_masked,
                     eta=effective_eta,
                 )
 
                 # Update spike times for records
-                self.pre_times[x > 0] = t
+                self.pre_times[x_masked > 0] = t
                 self.post_times[post_spikes > 0] = t
 
         return post_spikes, activation_magnitude

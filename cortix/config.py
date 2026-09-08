@@ -58,6 +58,8 @@ class CortixConfig:
     #                      normal data reconstructs well, anomalies don't)
     #   "winner_energy"  — original: winner_energy × (1 + concentration)
     SNN_SCORING_MODE: str = "reconstruction"
+    # Static feature dropout rate (bagging) per module to enforce ensemble diversity.
+    ENSEMBLE_FEATURE_DROPOUT: float = 0.20
     # Thalamic gate: how many nearest receptive-field centres fire per feature.
     # 1 = original ultra-sparse mode, 3 = multi-spike (better discriminability).
     THALAMIC_TOP_K: int = 3

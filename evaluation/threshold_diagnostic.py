@@ -110,6 +110,8 @@ def main():
             config.METAPLASTICITY_ALPHA = t.get("meta_alpha", config.METAPLASTICITY_ALPHA)
             config.HIDDEN_NEURONS = t.get("hidden_neurons", t.get("hidden", config.HIDDEN_NEURONS))
             config.ANOMALY_MODE = t.get("anomaly_mode", config.ANOMALY_MODE)
+            if "adaptive_threshold" in t:
+                config.ADAPTIVE_THRESHOLD = t.get("adaptive_threshold", config.ADAPTIVE_THRESHOLD)
             logger.info("Loaded tuning config: %s", t)
 
     os.makedirs(args.output, exist_ok=True)
