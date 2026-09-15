@@ -238,7 +238,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="evaluation/results")
     parser.add_argument("--seeds", type=int, nargs="+", default=None,
                          help="Explicit list of seeds, e.g. --seeds 1 2 3 4 5")
-    parser.add_argument("--n_seeds", type=int, default=10,
+    parser.add_argument("--n_seeds", type=int, default=5,
                          help="If --seeds not given, sweep seeds 0..n_seeds-1")
     args = parser.parse_args()
 
