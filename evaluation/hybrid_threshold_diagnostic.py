@@ -71,10 +71,13 @@ def collect_benign_probs(y_pred_snn: np.ndarray, classifier_features: np.ndarray
     model.eval()
 
     n_classifier = len(classifier_features)
+    if n_classifier != len(y_pred_snn):
+        raise ValueError(
+            f"Row misalignment: SNN has {len(y_pred_snn)} events but classifier features "
+            f"have {n_classifier} rows. Stage 2 would score the wrong flows."
+        )
 
     flagged_indices = np.where(y_pred_snn == 1)[0]
-    # Filter to valid indices within classifier_features length
-    flagged_indices = flagged_indices[flagged_indices < n_classifier]
     benign_probs = np.zeros(len(flagged_indices), dtype=np.float32)
 
     logger.info("Running Stage 2 inference on %d SNN-flagged events (seq_len=%d)...", len(flagged_indices), seq_len)

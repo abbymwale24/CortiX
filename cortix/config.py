@@ -104,7 +104,7 @@ class CortixConfig:
     RL_TOTAL_TIMESTEPS: int = 500_000
     BLOCK_DURATION_SECONDS: int = 60
     NUM_ACTIONS: int = 6
-    STATE_DIM: int = 20
+    STATE_DIM: int = 18
 
     # Reward shaping
     REWARD_CORRECT_BLOCK: float = 10.0

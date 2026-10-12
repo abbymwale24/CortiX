@@ -31,19 +31,20 @@ class TestCortixEnv:
     """Test the Gymnasium containment environment."""
 
     def test_env_creation(self):
-        """Environment should initialise without errors."""
+        """Environment should initialise without errors and match 18-dim state space."""
         env = CortixEnv()
         from gymnasium.spaces import Discrete
         assert isinstance(env.action_space, Discrete)
         assert env.action_space.n == config.NUM_ACTIONS
-        assert env.observation_space.shape == (config.STATE_DIM,)
+        assert config.STATE_DIM == 18, "State dimension must be exactly 18 for 6-class real taxonomy"
+        assert env.observation_space.shape == (18,), f"Expected shape (18,), got {env.observation_space.shape}"
 
     def test_reset_returns_valid_state(self):
         """Reset should return a valid observation and info dict."""
         env = CortixEnv()
         state, info = env.reset()
 
-        assert state.shape == (config.STATE_DIM,)
+        assert state.shape == (18,)
         assert isinstance(info, dict)
         assert np.all(state >= 0.0)
         assert np.all(state <= 1.0)
@@ -55,7 +56,7 @@ class TestCortixEnv:
 
         next_state, reward, terminated, truncated, info = env.step(0)
 
-        assert next_state.shape == (config.STATE_DIM,)
+        assert next_state.shape == (18,)
         assert isinstance(reward, float)
         assert isinstance(terminated, bool)
         assert isinstance(truncated, bool)
@@ -113,7 +114,7 @@ class TestCortixEnv:
         """Allowing an attack should yield negative reward."""
         events = [
             {
-                "is_attack": True, "class": "DDoS", "confidence": 0.92,
+                "is_attack": True, "class": "DoS", "confidence": 0.92,
                 "z_score": 10.0, "reputation": 0.9, "volume": 0.9,
                 "time_since_last": 0.05,
             }
@@ -181,7 +182,7 @@ class TestCortixEnv:
 # ──────────────────────────────────────────────
 
 class TestContainmentAgent:
-    """Test the DQN agent heuristic fallback rules."""
+    """Test the DQN agent heuristic fallback rules for 6-class real taxonomy."""
 
     def test_benign_returns_allow(self):
         """Benign traffic should get ALLOW action."""
@@ -194,16 +195,16 @@ class TestContainmentAgent:
         )
         assert action == 0, "BENIGN should be ALLOW (0)"
 
-    def test_ddos_returns_hard_block(self):
-        """DDoS should trigger HARD_BLOCK."""
+    def test_bruteforce_returns_hard_block(self):
+        """BruteForce should trigger HARD_BLOCK."""
         agent = ContainmentAgent(agent_path="/nonexistent/path")
 
         action = agent.select_action(
-            z_score=12.0, confidence=0.95, predicted_class="DDoS",
+            z_score=12.0, confidence=0.95, predicted_class="BruteForce",
             rolling_fpr=0.01, reputation=0.9, volume_percentile=0.95,
             time_since_last_alert=0.01,
         )
-        assert action == 4, "DDoS should be HARD_BLOCK (4)"
+        assert action == 4, "BruteForce should be HARD_BLOCK (4)"
 
     def test_dos_returns_hard_block(self):
         """DoS should trigger HARD_BLOCK."""
@@ -214,7 +215,7 @@ class TestContainmentAgent:
             rolling_fpr=0.01, reputation=0.8, volume_percentile=0.85,
             time_since_last_alert=0.05,
         )
-        assert action == 4
+        assert action == 4, "DoS should be HARD_BLOCK (4)"
 
     def test_portscan_returns_temp_block(self):
         """PortScan should trigger TEMP_BLOCK."""
@@ -239,11 +240,11 @@ class TestContainmentAgent:
         assert action == 5, "Infiltration should be HONEYPOT_REDIRECT (5)"
 
     def test_unknown_class_returns_rate_limit(self):
-        """Unknown attack classes should default to RATE_LIMIT."""
+        """Unknown attack classes not in 6-class taxonomy should default to RATE_LIMIT."""
         agent = ContainmentAgent(agent_path="/nonexistent/path")
 
         action = agent.select_action(
-            z_score=4.0, confidence=0.80, predicted_class="WebAttack",
+            z_score=4.0, confidence=0.80, predicted_class="UnknownAttack",
             rolling_fpr=0.01, reputation=0.5, volume_percentile=0.5,
             time_since_last_alert=0.5,
         )

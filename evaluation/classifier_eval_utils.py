@@ -48,7 +48,14 @@ def load_nslkdd_features_for_classifier(
         return None
 
     df = pd.read_csv(test_csv)
-    df = clean_dataframe(df)
+    n_raw = len(df)
+    # Keep duplicates: row i here MUST be row i of the SNN's view of the same
+    # CSV. Dropping rows shifts every later row onto the wrong flow.
+    df = clean_dataframe(df, drop_duplicates=False)
+    if len(df) != n_raw:
+        raise RuntimeError(
+            f"Classifier features lost row alignment: {len(df)} rows vs {n_raw} in {test_csv}"
+        )
 
     # Use dataset-native features (all columns except Label)
     feature_cols = [c for c in df.columns if c != "Label"]

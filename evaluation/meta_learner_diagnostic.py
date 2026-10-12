@@ -133,7 +133,7 @@ def main():
         return
 
     flagged_indices, benign_probs = collect_benign_probs(
-        snn_results, classifier_features, benign_idx, model_path
+        y_pred_snn, classifier_features, benign_idx, model_path
     )
     attack_probs = 1.0 - benign_probs  # P(attack) from Stage 2, for a consistent "higher = more suspicious" direction
 
@@ -163,7 +163,7 @@ def main():
     n_splits = 5
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=args.seed)
     cv_preds = cast(np.ndarray, cross_val_predict(
-        LogisticRegression(class_weight="balanced"), cast(cast(Any, np.ndarray), X), cast(cast(Any, np.ndarray), y),
+        LogisticRegression(class_weight="balanced"), cast(Any, X), cast(Any, y),
         cv=skf, method="predict_proba"
     ))
     meta_probs = cv_preds[:, 1]  # P(attack)

@@ -41,14 +41,20 @@ ATTACK_CLASSES = [
 ]
 
 
-def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Clean infinite and missing values in tabular dataset."""
+def clean_dataframe(df: pd.DataFrame, drop_duplicates: bool = True) -> pd.DataFrame:
+    """Clean infinite and missing values in tabular dataset.
+
+    `drop_duplicates=False` keeps every row (and its original position). Use it
+    for evaluation, where row i must stay aligned with row i of other views of
+    the same test file (e.g. the SNN's features). Training keeps the default.
+    """
     df = df.copy()
     # Strip whitespace from column names
     df.columns = df.columns.str.strip()
     
     # Drop completely duplicate rows
-    df = df.drop_duplicates()
+    if drop_duplicates:
+        df = df.drop_duplicates()
 
     # Clean infinity and NaN
     df = df.replace([np.inf, -np.inf], np.nan)

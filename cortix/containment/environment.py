@@ -23,7 +23,7 @@ class CortixEnv(gym.Env):
     """
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, events_dataset: list[dict] = None):
+    def __init__(self, events_dataset: list[dict] | None = None):
         super().__init__()
         # Load dataset of historical scenarios if provided; else generate synthetic
         self.events = events_dataset or self._generate_synthetic_events()
@@ -31,15 +31,15 @@ class CortixEnv(gym.Env):
         # Action space: 6 discrete containment levels
         self.action_space = spaces.Discrete(config.NUM_ACTIONS)
 
-        # Observation space: 20 dimensions
+        # Observation space: 18 dimensions
         # - z_score (normalised) [0]
         # - classifier confidence [1]
-        # - classifier predicted class (one-hot, 9 dims) [2..10]
-        # - recent false_positive_rate [11]
-        # - source IP reputation [12]
-        # - traffic volume percentile [13]
-        # - time_since_last_alert [14]
-        # - current_containment_action (one-hot, 6 dims) [15..20]
+        # - classifier predicted class (one-hot, 6 dims) [2..7]
+        # - recent false_positive_rate [8]
+        # - source IP reputation [9]
+        # - traffic volume percentile [10]
+        # - time_since_last_alert [11]
+        # - current_containment_action (one-hot, 6 dims) [12..17]
         self.observation_space = spaces.Box(
             low=0.0,
             high=1.0,
@@ -59,7 +59,7 @@ class CortixEnv(gym.Env):
             is_attack = random.random() < 0.25  # 25% attacks
             
             if is_attack:
-                attack_classes = ["DoS", "DDoS", "PortScan", "BruteForce", "Infiltration", "Botnet"]
+                attack_classes = ["BruteForce", "DoS", "Infiltration", "PortScan", "WebAttack"]
                 pred_class = random.choice(attack_classes)
                 confidence = random.uniform(0.70, 0.99)
                 z_score = random.uniform(3.0, 15.0)
@@ -99,18 +99,18 @@ class CortixEnv(gym.Env):
         obs[0] = min(event["z_score"] / 20.0, 1.0)
         obs[1] = event["confidence"]
 
-        # One-hot predicted class
-        attack_classes = ["BENIGN", "DoS", "DDoS", "PortScan", "BruteForce", "WebAttack", "Infiltration", "Botnet", "ZeroDay"]
+        # One-hot predicted class (6 real classes)
+        attack_classes = ["BENIGN", "BruteForce", "DoS", "Infiltration", "PortScan", "WebAttack"]
         class_idx = attack_classes.index(event["class"]) if event["class"] in attack_classes else 0
         obs[2 + class_idx] = 1.0
 
-        obs[11] = self.rolling_fp_rate
-        obs[12] = event["reputation"]
-        obs[13] = event["volume"]
-        obs[14] = event["time_since_last"]
+        obs[8] = self.rolling_fp_rate
+        obs[9] = event["reputation"]
+        obs[10] = event["volume"]
+        obs[11] = event["time_since_last"]
 
         # Current state containment action: default ALLOW (0) during new state
-        obs[15] = 1.0  # Default ALLOW index 15
+        obs[12] = 1.0  # Default ALLOW index 12
         
         return obs
 

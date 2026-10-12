@@ -26,7 +26,7 @@ from cortix.preprocessor.encoder import SpikeEncoder
 from cortix.snn.ensemble import HebbianEnsemble
 from cortix.classifier.inference import ClassifierInference
 from cortix.containment.agent import ContainmentAgent
-from cortix.containment.executor import ContainmentExecutor
+from cortix.containment.executor import ContainmentExecutor, detect_default_interface
 from cortix.attribution.osint_engine import AttackerAttributionEngine
 from cortix.attribution.alerter import ThreatAlerter
 from cortix.honeypot.watcher import HoneypotWatcher
@@ -49,7 +49,7 @@ class CortixDaemon:
 
     def __init__(self, interface: Optional[str] = None, mode: str = "live"):
         self.mode = mode
-        self.interface = interface or config.CAPTURE_INTERFACE
+        self.interface = interface or os.getenv("CORTIX_INTERFACE") or detect_default_interface()
 
         logger.info("Initializing CortiX Daemon Pipeline. Interface: %s. Mode: %s", self.interface, self.mode)
         
@@ -304,7 +304,10 @@ class CortixDaemon:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CortiX Firewall Daemon")
-    parser.add_argument("--interface", type=str, default="eth0", help="Capturing network interface")
+    parser.add_argument(
+        "--interface", type=str, default=None,
+        help="Capturing network interface (default: CORTIX_INTERFACE env var, else the detected default-route interface)",
+    )
     parser.add_argument("--mode", type=str, default="live", choices=["live", "offline"], help="Capture mode")
     args = parser.parse_args()
 

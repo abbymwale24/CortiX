@@ -250,6 +250,7 @@ def evaluate_snn(
         "fp": int(fp),
         "fn": int(fn),
         "detection_rate": recall,
+        "eval_indices": eval_indices,
         "z_scores": z_scores,
         "y_true": y_true,
         "y_pred": y_pred,
@@ -445,15 +446,19 @@ def evaluate_hybrid(
     y_pred_snn = snn_results["y_pred"]
     y_pred_hybrid = y_pred_snn.copy()
 
+    # If SNN evaluated a subset of features (e.g. inline warmup), slice classifier_features accordingly
+    if "eval_indices" in snn_results and len(classifier_features) != len(y_pred_snn):
+        eval_idx = snn_results["eval_indices"]
+        if len(eval_idx) == len(y_pred_snn) and max(eval_idx) < len(classifier_features):
+            classifier_features = classifier_features[eval_idx]
+
     seq_len = inferred_seq_len
     n_classifier = len(classifier_features)
     n_snn = len(y_pred_snn)
     if n_classifier != n_snn:
-        logger.warning(
-            "Row count mismatch: SNN evaluated %d samples but classifier "
-            "features have %d rows (clean_dataframe drops duplicates). "
-            "Indices >= %d will keep SNN prediction unchanged.",
-            n_snn, n_classifier, n_classifier,
+        raise ValueError(
+            f"Row misalignment: SNN evaluated {n_snn} samples but classifier features "
+            f"have {n_classifier} rows. Stage 2 would score the wrong flows."
         )
 
     with torch.no_grad():
@@ -566,7 +571,7 @@ def evaluate_meta_learner(
             return None
 
         flagged_indices, benign_probs = collect_benign_probs(
-            snn_results, classifier_features, benign_idx, model_path
+            snn_results["y_pred"], classifier_features, benign_idx, model_path
         )
         if len(flagged_indices) == 0:
             return None
@@ -801,9 +806,18 @@ def print_benchmark_report(results: list[dict]):
 # Dataset Loaders
 # ──────────────────────────────────────────────
 
-def load_nslkdd_dataset(train_csv: str = "data/nslkdd_train.csv", test_csv: str = "data/nslkdd_test.csv"):
+def load_nslkdd_dataset(
+    train_csv: str = "data/nslkdd_train.csv",
+    test_csv: str = "data/nslkdd_test.csv",
+    exclude_train_classes: Optional[list[str]] = None,
+):
     """
     Load NSL-KDD dataset using continuous numeric features for SpikeEncoder population coding.
+
+    `exclude_train_classes`: if given, rows with these labels are DROPPED from the
+    training split before the scaler is fit (used for leave-one-attack-out
+    zero-day experiments, so the held-out class never influences calibration).
+    The test split is returned untouched; callers filter it themselves.
     """
     import pandas as pd
     from sklearn.preprocessing import MinMaxScaler
@@ -819,6 +833,12 @@ def load_nslkdd_dataset(train_csv: str = "data/nslkdd_train.csv", test_csv: str 
 
     train_df = pd.read_csv(train_csv)
     test_df = pd.read_csv(test_csv)
+
+    if exclude_train_classes:
+        before = len(train_df)
+        train_df = train_df[~train_df["Label"].isin(exclude_train_classes)].reset_index(drop=True)
+        logger.info("Holdout: removed %d train rows of %s before scaler fit",
+                    before - len(train_df), exclude_train_classes)
 
     X_train = np.asarray(train_df.drop(columns=["Label"]))
     y_train = np.asarray((train_df["Label"] != "BENIGN").astype(int))

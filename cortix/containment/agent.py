@@ -25,7 +25,7 @@ class ContainmentAgent:
     given the current security telemetry.
     """
 
-    def __init__(self, agent_path: str = None):
+    def __init__(self, agent_path: str | None = None):
         self.agent_path = agent_path or config.AGENT_PATH
         self.agent = None
 
@@ -63,24 +63,24 @@ class ContainmentAgent:
         Returns:
             action_id: integer in range 0..5
         """
-        # Construct state vector matching Gymnasium definition (20 dimensions)
+        # Construct state vector matching Gymnasium definition (18 dimensions)
         state = np.zeros(config.STATE_DIM, dtype=np.float32)
         state[0] = min(z_score / 20.0, 1.0)
         state[1] = confidence
 
-        # One-hot predicted class
-        attack_classes = ["BENIGN", "DoS", "DDoS", "PortScan", "BruteForce", "WebAttack", "Infiltration", "Botnet", "ZeroDay"]
+        # One-hot predicted class (6 real classes)
+        attack_classes = ["BENIGN", "BruteForce", "DoS", "Infiltration", "PortScan", "WebAttack"]
         class_idx = attack_classes.index(predicted_class) if predicted_class in attack_classes else 0
         state[2 + class_idx] = 1.0
 
-        state[11] = rolling_fpr
-        state[12] = reputation
-        state[13] = volume_percentile
-        state[14] = time_since_last_alert
+        state[8] = rolling_fpr
+        state[9] = reputation
+        state[10] = volume_percentile
+        state[11] = time_since_last_alert
         
-        # One-hot current containment action
+        # One-hot current containment action (6 actions)
         if 0 <= current_action < 6:
-            state[15 + current_action] = 1.0
+            state[12 + current_action] = 1.0
 
         # DQN inference
         if self.agent is not None:
@@ -94,8 +94,8 @@ class ContainmentAgent:
         if predicted_class == "BENIGN":
             return 0  # ALLOW
             
-        if predicted_class in ["DDoS", "DoS"]:
-            return 4  # HARD_BLOCK if critical flood
+        if predicted_class in ["DDoS", "DoS", "BruteForce"]:
+            return 4  # HARD_BLOCK if critical flood or brute force
             
         if predicted_class == "Infiltration":
             return 5  # HONEYPOT_REDIRECT for high risk intrusions

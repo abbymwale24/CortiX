@@ -44,18 +44,24 @@ def predict_anomaly(z_scores: np.ndarray, threshold: float, mode: str) -> np.nda
         return (z_scores > threshold).astype(int)
 
 
-def load_dataset(dataset: str):
+def load_dataset(dataset: str, holdout_class: Optional[str] = None):
     if dataset == "nslkdd":
-        nsl_data = load_nslkdd_dataset()
+        nsl_data = load_nslkdd_dataset(
+            exclude_train_classes=[holdout_class] if holdout_class else None
+        )
         y_train = nsl_data["y_train"]
         X_train_sel = nsl_data["X_train"]
         benign_train_mask = y_train == 0
         benign_train = X_train_sel[benign_train_mask]
         warmup_n = min(10000, len(benign_train))
+        # Test split returned in full; holdout splitting is done in run_clean_holdout().
+        X_test = nsl_data["X_test"]
+        y_test = nsl_data["y_test"]
+        y_test_class = list(nsl_data["y_test_class"])
         return dict(
-            features=nsl_data["X_test"],
-            labels_binary=nsl_data["y_test"],
-            labels_class=nsl_data["y_test_class"],
+            features=X_test,
+            labels_binary=y_test,
+            labels_class=y_test_class,
             warmup_features=benign_train[:warmup_n],
             context_keys=None,
             warmup_context_keys=None,
@@ -93,12 +99,163 @@ def sweep_thresholds(z_scores: np.ndarray, y_true: np.ndarray, mode: str, n_poin
     return rows
 
 
+def _run_snn(data: dict, X: np.ndarray, y: np.ndarray, cls: list[str], seed: int) -> dict:
+    """Fresh ensemble, same seed + same benign warmup -> identical weights every call."""
+    return evaluate_snn(
+        X, y, cls,
+        warmup_features=cast(Optional[np.ndarray], data["warmup_features"]),
+        context_keys=None, warmup_context_keys=None, seed=seed,
+    )
+
+
+def _metrics_at(z: np.ndarray, y: np.ndarray, thr: float, mode: str) -> dict:
+    p = predict_anomaly(z, thr, mode)
+    tp = int(np.sum((y == 1) & (p == 1))); fn = int(np.sum((y == 1) & (p == 0)))
+    fp = int(np.sum((y == 0) & (p == 1))); tn = int(np.sum((y == 0) & (p == 0)))
+    return {"detection_rate": tp / (tp + fn) if tp + fn else 0.0,
+            "fpr": fp / (fp + tn) if fp + tn else 0.0,
+            "tp": tp, "fn": fn, "fp": fp, "tn": tn}
+
+
+def run_clean_holdout(args, data: dict, holdout: str, original_thr: float) -> None:
+    """
+    Leave-one-attack-out zero-day test with ZERO exposure of `holdout`:
+      - scaler fit:      train split with `holdout` rows removed (load_nslkdd_dataset)
+      - SNN warmup:      benign-only train rows
+      - threshold pick:  Phase 1 = BENIGN half A + all OTHER attack classes (best F1)
+      - evaluation:      Phase 2 = BENIGN half B + ONLY `holdout`, at the frozen Phase-1 threshold
+    Benign halves A/B are disjoint so Phase-2 FPR is not measured on selection data.
+    """
+    mode = config.ANOMALY_MODE
+    X = cast(np.ndarray, data["features"])
+    y = cast(np.ndarray, data["labels_binary"])
+    cls = np.asarray(data["labels_class"])
+
+    available = sorted(set(cls.tolist()))
+    if holdout not in available or holdout == "BENIGN":
+        raise SystemExit(f"holdout class {holdout!r} invalid; test labels: {available}")
+
+    rng = np.random.default_rng(args.seed)
+    benign_idx = rng.permutation(np.where(cls == "BENIGN")[0])
+    half = len(benign_idx) // 2
+    benign_sel, benign_eval = benign_idx[:half], benign_idx[half:]
+
+    other_idx = np.where((cls != "BENIGN") & (cls != holdout))[0]
+    hold_idx = np.where(cls == holdout)[0]
+    sel_idx = np.sort(np.concatenate([benign_sel, other_idx]))
+    eval_idx = np.sort(np.concatenate([benign_eval, hold_idx]))
+
+    # Hard guarantees — abort rather than silently leak.
+    assert holdout not in set(cls[sel_idx].tolist()), "LEAK: holdout class in selection set"
+    assert len(np.intersect1d(sel_idx, eval_idx)) == 0, "LEAK: selection/eval overlap"
+    assert set(cls[eval_idx].tolist()) == {"BENIGN", holdout}
+    other_classes = sorted(set(cls[other_idx].tolist()))
+
+    # ── Phase 1: threshold selection without the holdout class ──
+    logger.info("PHASE 1 (selection): %d BENIGN-A + %d attacks from %s",
+                len(benign_sel), len(other_idx), other_classes)
+    r1 = _run_snn(data, X[sel_idx], y[sel_idx], cls[sel_idx].tolist(), args.seed)
+    z1, y1 = r1["z_scores"], r1["y_true"]
+    sweep = sweep_thresholds(z1, y1, mode, n_points=60)
+    best_f1_row = max(sweep, key=lambda r: r["f1_score"])
+    clean_thr_f1 = float(best_f1_row["threshold"])
+    auc1 = float(roc_auc_score(y1, mode_aware_score(z1, mode)))
+
+    # Also find thresholds for realistic FPR targets (5% and 10%) on Phase 1 data
+    fpr_5_rows = [r for r in sweep if r["fpr"] <= 0.05]
+    best_fpr_5_row = max(fpr_5_rows, key=lambda r: r["detection_rate"]) if fpr_5_rows else None
+
+    fpr_10_rows = [r for r in sweep if r["fpr"] <= 0.10]
+    best_fpr_10_row = max(fpr_10_rows, key=lambda r: r["detection_rate"]) if fpr_10_rows else None
+
+    print("\n" + "=" * 100)
+    print(f"PHASE 1 — THRESHOLD SELECTION (holdout '{holdout}' EXCLUDED)   mode={mode}")
+    print("=" * 100)
+    print(f"Selection set: {len(benign_sel)} BENIGN (half A) + {len(other_idx)} attacks {other_classes}")
+    print(f"AUC on selection set = {auc1:.4f}")
+    print(f"{'Threshold':>10} | {'Detection':>10} | {'FPR':>9} | {'F1':>7}")
+    for row in sweep[::max(1, len(sweep) // 20)]:
+        print(f"{row['threshold']:>10.3f} | {row['detection_rate']*100:>9.2f}% | "
+              f"{row['fpr']*100:>8.4f}% | {row['f1_score']:>7.4f}")
+    thr_10 = float(best_fpr_10_row["threshold"]) if best_fpr_10_row else None
+    thr_5 = float(best_fpr_5_row["threshold"]) if best_fpr_5_row else None
+
+    if best_fpr_10_row and thr_10 is not None:
+        print(f"-> Strategy B (FPR <= 10%): Threshold = {thr_10:.4f} "
+              f"(det={best_fpr_10_row['detection_rate']*100:.2f}%, fpr={best_fpr_10_row['fpr']*100:.4f}%)")
+    if best_fpr_5_row and thr_5 is not None:
+        print(f"-> Strategy C (FPR <= 5%):  Threshold = {thr_5:.4f} "
+              f"(det={best_fpr_5_row['detection_rate']*100:.2f}%, fpr={best_fpr_5_row['fpr']*100:.4f}%)")
+
+    # ── Phase 2: zero-day evaluation at the frozen threshold(s) ──
+    config.ANOMALY_Z_THRESHOLD = clean_thr_f1
+    logger.info("PHASE 2 (zero-day eval): %d BENIGN-B + %d %s at frozen Max-F1 threshold %.4f",
+                len(benign_eval), len(hold_idx), holdout, clean_thr_f1)
+    r2 = _run_snn(data, X[eval_idx], y[eval_idx], cls[eval_idx].tolist(), args.seed)
+    z2, y2 = r2["z_scores"], r2["y_true"]
+    
+    m_f1 = _metrics_at(z2, y2, clean_thr_f1, mode)
+    auc2 = float(roc_auc_score(y2, mode_aware_score(z2, mode)))
+    ref = _metrics_at(z2, y2, original_thr, mode)
+
+    m_fpr10 = _metrics_at(z2, y2, thr_10, mode) if thr_10 is not None else None
+    m_fpr5 = _metrics_at(z2, y2, thr_5, mode) if thr_5 is not None else None
+
+    print("\n" + "#" * 100)
+    print(f"  ZERO-DAY HOLDOUT RESULT — {holdout}")
+    print("#" * 100)
+    print(f"  Exposure audit for '{holdout}':")
+    print(f"    scaler fit ........... EXCLUDED (train rows of {holdout} dropped before MinMaxScaler.fit)")
+    print(f"    SNN warmup ........... EXCLUDED (benign-only train rows)")
+    print(f"    threshold selection .. EXCLUDED (Phase 1 classes: BENIGN + {other_classes})")
+    print(f"    adaptive calibration . OFF")
+    print(f"    benign overlap ....... NONE (Phase 1 and Phase 2 use disjoint benign halves)")
+    print("-" * 100)
+    print("  RESULTS AT FROZEN THRESHOLDS (derived in Phase 1, ZERO exposure to held-out attack):")
+    print(f"  [1] Max-F1 Threshold ({clean_thr_f1:.4f}):")
+    print(f"      {holdout} Detection Rate: {m_f1['detection_rate']*100:.2f}%   ({m_f1['tp']}/{m_f1['tp']+m_f1['fn']})")
+    print(f"      BENIGN False Positive Rate: {m_f1['fpr']*100:.4f}% ({m_f1['fp']}/{m_f1['fp']+m_f1['tn']})")
+    if m_fpr10 and thr_10 is not None:
+        print(f"  [2] Target FPR <= 10% Threshold ({thr_10:.4f}):")
+        print(f"      {holdout} Detection Rate: {m_fpr10['detection_rate']*100:.2f}%   ({m_fpr10['tp']}/{m_fpr10['tp']+m_fpr10['fn']})")
+        print(f"      BENIGN False Positive Rate: {m_fpr10['fpr']*100:.4f}% ({m_fpr10['fp']}/{m_fpr10['fp']+m_fpr10['tn']})")
+    if m_fpr5 and thr_5 is not None:
+        print(f"  [3] Target FPR <= 5% Threshold ({thr_5:.4f}):")
+        print(f"      {holdout} Detection Rate: {m_fpr5['detection_rate']*100:.2f}%   ({m_fpr5['tp']}/{m_fpr5['tp']+m_fpr5['fn']})")
+        print(f"      BENIGN False Positive Rate: {m_fpr5['fpr']*100:.4f}% ({m_fpr5['fp']}/{m_fpr5['fp']+m_fpr5['tn']})")
+    print(f"  AUC (benign vs {holdout}): {auc2:.4f}  (threshold-free separability measure)")
+    print(f"  [reference only] legacy threshold {original_thr}: det={ref['detection_rate']*100:.2f}% "
+          f"fpr={ref['fpr']*100:.4f}%")
+    print("#" * 100 + "\n")
+
+    out = {
+        "holdout_class": holdout, "seed": args.seed, "anomaly_mode": mode,
+        "clean_threshold_f1": clean_thr_f1, "legacy_threshold": original_thr,
+        "exposure": {"scaler_fit": "excluded", "warmup": "benign_only",
+                     "threshold_selection": "excluded", "adaptive_threshold": False,
+                     "benign_split": "disjoint_halves"},
+        "phase1": {"classes": ["BENIGN"] + other_classes, "n_benign": len(benign_sel),
+                   "n_attack": len(other_idx), "auc": auc1, "best_f1": best_f1_row,
+                   "best_fpr_10": best_fpr_10_row, "best_fpr_5": best_fpr_5_row, "sweep": sweep},
+        "phase2": {"n_benign": len(benign_eval), "n_holdout": len(hold_idx),
+                   "auc": auc2, "max_f1_results": m_f1, "target_fpr10_results": m_fpr10,
+                   "target_fpr5_results": m_fpr5, "legacy_threshold_reference": ref},
+    }
+    path = os.path.join(args.output, f"zero_day_holdout_{holdout}.json")
+    with open(path, "w") as f:
+        json.dump(out, f, indent=2)
+    logger.info("Zero-day holdout results saved to %s", path)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="nslkdd", choices=["nslkdd", "synthetic"])
     parser.add_argument("--tune_file", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="evaluation/results")
+    parser.add_argument("--holdout_class", type=str, default=None,
+                        help="Leave-one-attack-out zero-day test: exclude this class from scaler fit, "
+                             "warmup AND threshold selection; evaluate on BENIGN + this class only.")
     args = parser.parse_args()
 
     if args.tune_file and os.path.exists(args.tune_file):
@@ -115,6 +272,17 @@ def main():
             logger.info("Loaded tuning config: %s", t)
 
     os.makedirs(args.output, exist_ok=True)
+
+    holdout = args.holdout_class
+    if holdout:
+        if args.dataset != "nslkdd":
+            raise SystemExit("--holdout_class is only supported with --dataset nslkdd")
+        # No per-run recalibration in a zero-day test; threshold comes from Phase 1.
+        config.ADAPTIVE_THRESHOLD = False
+        logger.info("CLEAN HOLDOUT MODE: class=%s, adaptive calibration OFF", holdout)
+        data = load_dataset(args.dataset, holdout_class=holdout)
+        run_clean_holdout(args, data, holdout, original_thr=float(config.ANOMALY_Z_THRESHOLD))
+        return
 
     mode = config.ANOMALY_MODE
     logger.info("Using ANOMALY_MODE=%s for scoring/sweep direction", mode)
