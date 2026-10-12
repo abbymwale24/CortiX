@@ -7,6 +7,13 @@ prints live rule verification output, performs cleanup, and re-verifies clean ba
 """
 
 import subprocess
+import sys
+from pathlib import Path
+
+# Make `cortix` importable when this script is run directly from scripts/.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from cortix.containment.executor import ContainmentExecutor, _parse_default_routes, detect_default_interface
 
 TARGET_IP = "198.51.100.1"
 
@@ -19,10 +26,50 @@ def run(cmd: str):
         print(f"[STDERR] {res.stderr.rstrip()}")
     return res
 
+def verify_interface_detection() -> str:
+    """
+    Exercise the actual interface-resolution logic (no sudo required) before
+    running any tc commands, instead of assuming eth0 exists. Covers:
+      - _parse_default_routes() against synthetic `ip route` output
+      - detect_default_interface() against this machine's real routing table
+      - ContainmentExecutor()'s resolution order (ctor arg > env var > detection)
+    Returns the interface tc should actually be tested against.
+    """
+    print("\n--- STEP 0: Interface Detection ---")
+
+    # Parser unit checks against synthetic input — no live routing table required.
+    multi_route_output = (
+        "default via 10.0.0.1 dev eth1 proto dhcp src 10.0.0.5 metric 600\n"
+        "default via 10.0.0.1 dev eth0 proto static src 10.0.0.5 metric 100\n"
+    )
+    assert _parse_default_routes(multi_route_output) == "eth0", (
+        "expected lowest-metric route (eth0, metric 100) to win"
+    )
+    assert _parse_default_routes("") is None, "no default route should parse to None"
+    print("[OK] _parse_default_routes() picks lowest-metric route and handles empty input")
+
+    # Live detection on this machine.
+    detected = detect_default_interface()
+    print(f"[INFO] detect_default_interface() on this machine -> {detected!r}")
+
+    # ContainmentExecutor's constructor-arg override still takes priority.
+    executor = ContainmentExecutor(interface="lo")
+    assert executor.interface == "lo", "explicit constructor arg must win over detection"
+    print("[OK] ContainmentExecutor(interface=...) override takes priority over detection")
+
+    if detected is None:
+        print(
+            "[WARN] No default route detected on this machine — tc steps below will be "
+            "skipped (this mirrors ContainmentExecutor's own no-op behavior, not a hardcoded eth0 guess)."
+        )
+    return detected
+
 def main():
     print("=" * 80)
     print(f"   CORTIX CONTAINMENT EXECUTOR VERIFICATION — TARGET IP: {TARGET_IP}")
     print("=" * 80)
+
+    tc_interface = verify_interface_detection()
 
     # 1. Action 2 (TEMP_BLOCK) — Prepend DROP rule
     print("\n--- STEP 1: Temp Block (iptables prepend DROP rule) ---")
@@ -74,14 +121,22 @@ def main():
     # 5. Action 1 (RATE_LIMIT) — Traffic Control TBF qdisc
     print("\n" + "=" * 80)
     print("--- STEP 5: Rate Limit (tc qdisc tbf 100kbit rate limit) ---")
-    run("sudo tc qdisc add dev eth0 root tbf rate 100kbit burst 1mbit latency 70ms")
-    print("\n[VERIFICATION STEP 5]: sudo tc qdisc show dev eth0")
-    run("sudo tc qdisc show dev eth0")
+    if tc_interface is None:
+        print(
+            "[SKIPPED] No default-route interface detected on this machine — "
+            "this matches ContainmentExecutor's own RATE_LIMIT no-op (see executor.py), "
+            "rather than guessing eth0 on a box that may not have one."
+        )
+    else:
+        print(f"[INFO] Using detected interface: {tc_interface}")
+        run(f"sudo tc qdisc add dev {tc_interface} root tbf rate 100kbit burst 1mbit latency 70ms")
+        print(f"\n[VERIFICATION STEP 5]: sudo tc qdisc show dev {tc_interface}")
+        run(f"sudo tc qdisc show dev {tc_interface}")
 
-    print("\n[CLEANUP STEP 5]: sudo tc qdisc del dev eth0 root")
-    run("sudo tc qdisc del dev eth0 root")
-    print("[POST-CLEANUP VERIFICATION STEP 5]:")
-    run("sudo tc qdisc show dev eth0")
+        print(f"\n[CLEANUP STEP 5]: sudo tc qdisc del dev {tc_interface} root")
+        run(f"sudo tc qdisc del dev {tc_interface} root")
+        print("[POST-CLEANUP VERIFICATION STEP 5]:")
+        run(f"sudo tc qdisc show dev {tc_interface}")
 
     print("\n" + "=" * 80)
     print("   ALL VERIFICATIONS AND CLEANUPS COMPLETED")

@@ -9,6 +9,18 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+from cortix.containment.executor import detect_default_interface
+
+
+def _default_capture_interface() -> Optional[str]:
+    """
+    Resolve the default capture interface the same way
+    ContainmentExecutor and the daemon do: an explicit CORTIX_INTERFACE
+    env var wins, otherwise fall back to the detected default-route
+    interface (may be None if no default route exists).
+    """
+    return os.getenv("CORTIX_INTERFACE") or detect_default_interface()
+
 
 @dataclass
 class CortixConfig:
@@ -17,7 +29,11 @@ class CortixConfig:
     # ──────────────────────────────────────────────
     # Network Capture
     # ──────────────────────────────────────────────
-    CAPTURE_INTERFACE: str = os.getenv("CORTIX_INTERFACE", "eth0")
+    # Resolved once, at import time, via CORTIX_INTERFACE env var ->
+    # detected default-route interface -> None. A default_factory is
+    # used (rather than a plain default) so detection runs lazily when
+    # the dataclass is instantiated, not merely imported.
+    CAPTURE_INTERFACE: Optional[str] = field(default_factory=_default_capture_interface)
     BPF_FILTER: str = os.getenv("CORTIX_BPF_FILTER", "")
     FLOW_WINDOW_SECONDS: float = 1.0
 
