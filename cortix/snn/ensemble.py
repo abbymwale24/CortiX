@@ -186,7 +186,7 @@ class HebbianEnsemble:
         """Return p50 and p99 hot-path latencies."""
         return self._latency_scorer.get_latency_stats()
 
-    def calibrate_thresholds(self, percentile: float = 95.0):
+    def calibrate_thresholds(self, percentile: float = 95.0) -> int:
         """
         Calibrate all per-module scorer thresholds from warmup z-scores.
 
@@ -194,10 +194,27 @@ class HebbianEnsemble:
         each scorer's z-threshold to the given percentile of the observed
         benign z-score distribution.  Default p95 balances detection recall
         (≥70%) with manageable FPR for the hybrid classifier to clean up.
+
+        Returns:
+            Number of module scorers that actually calibrated. A scorer
+            skips calibration (keeping its static threshold) if it has
+            fewer than 50 warmup z-scores or adaptive thresholding is off.
         """
-        for i, scorer in enumerate(self.scorers):
+        for scorer in self.scorers:
             scorer.calibrate_threshold(percentile=percentile)
-        logger.info("All %d module scorers calibrated (p%.1f)", self.M, percentile)
+        calibrated = sum(1 for s in self.scorers if s._calibrated)
+        thresholds = ", ".join(f"{s.z_threshold:.3f}" for s in self.scorers)
+        if calibrated == self.M:
+            logger.info(
+                "All %d module scorers calibrated (p%.1f). Thresholds: [%s]",
+                self.M, percentile, thresholds,
+            )
+        else:
+            logger.warning(
+                "Only %d/%d module scorers calibrated (p%.1f); the rest keep their static threshold. Thresholds: [%s]",
+                calibrated, self.M, percentile, thresholds,
+            )
+        return calibrated
 
     def reset(self):
         """Reset all state."""

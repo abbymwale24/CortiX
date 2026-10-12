@@ -409,6 +409,26 @@ class TestAnomalyScorer:
         stats = scorer.get_latency_stats()
         assert stats["count"] == 0
 
+    def test_calibrate_threshold_insufficient_samples(self):
+        """Scorer should skip calibration when fewer than 50 warmup z-scores are present."""
+        scorer = AnomalyScorer(adaptive_threshold=True, z_threshold=3.5)
+        for i in range(30):
+            scorer.score(float(i))
+        scorer.calibrate_threshold(percentile=95.0)
+        assert scorer._calibrated is False
+        assert scorer.z_threshold == 3.5
+
+    def test_calibrate_threshold_success(self):
+        """Scorer should calibrate threshold and clear warmup buffer with sufficient samples."""
+        scorer = AnomalyScorer(adaptive_threshold=True, z_threshold=3.5)
+        # Needs 20 samples to start collecting warmup z-scores, plus at least 50 samples
+        for i in range(80):
+            scorer.score(1.0 + np.sin(i) * 0.1)
+        scorer.calibrate_threshold(percentile=95.0)
+        assert scorer._calibrated is True
+        assert len(scorer._warmup_z_scores) == 0
+        assert scorer.z_threshold >= 1.5
+
 
 # ──────────────────────────────────────────────
 # Metaplasticity Controller
@@ -554,6 +574,17 @@ class TestHebbianEnsemble:
         e2 = HebbianEnsemble(M=3, seed=42)
         for m1, m2 in zip(e1.modules, e2.modules):
             np.testing.assert_array_equal(m1.W, m2.W)
+
+    def test_ensemble_calibrate_thresholds(self):
+        """Ensemble should successfully calibrate all module thresholds after sufficient events."""
+        ensemble = HebbianEnsemble(M=3)
+        x = np.random.randint(0, 2, 512).astype(np.float32)
+        for _ in range(80):
+            ensemble.process_event(x)
+        calibrated = ensemble.calibrate_thresholds(percentile=95.0)
+        assert calibrated == 3
+        for scorer in ensemble.scorers:
+            assert scorer._calibrated is True
 
 
 # ──────────────────────────────────────────────

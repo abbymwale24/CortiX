@@ -158,26 +158,47 @@ class CortixDaemon:
 
         # Check warmup mode: feed initial benign flows without triggering alerts
         if not self.is_warmed_up:
-            baseline_len = len(self.snn_ensemble.scorers[0]._global_window)
-            if self._flow_count % 5 == 0 or self._flow_count == 1 or self._flow_count >= self.warmup_flows:
+            scorer0 = self.snn_ensemble.scorers[0]
+            baseline_len = len(scorer0._global_window)
+            zs_collected = len(scorer0._warmup_z_scores)
+            if self._flow_count % 50 == 0 or self._flow_count == 1:
                 logger.info(
-                    "Warmup Flow #%d/%d [%s → %s] | SNN baseline: %d samples | z-score: %.2f",
+                    "Warmup Flow #%d/%d [%s → %s] | SNN baseline: %d samples | calibration z-scores: %d/50 | z-score: %.2f",
                     self._flow_count,
                     self.warmup_flows,
                     src_ip,
                     dst_ip,
                     baseline_len,
+                    zs_collected,
                     z_score,
                 )
-            if self._flow_count >= self.warmup_flows:
-                self.is_warmed_up = True
-                if config.ADAPTIVE_THRESHOLD:
-                    self.snn_ensemble.calibrate_thresholds()
-                logger.info(
-                    "Warmup complete (%d flows processed). SNN baseline established across %d modules. Live scoring and containment active.",
-                    self.warmup_flows,
-                    self.snn_ensemble.M,
-                )
+            # Attempt calibration at the target, then retry every 25 flows
+            # until every scorer has the >=50 z-scores it needs.
+            due = self._flow_count >= self.warmup_flows and (
+                self._flow_count == self.warmup_flows
+                or (self._flow_count - self.warmup_flows) % 25 == 0
+            )
+            if not due:
+                return
+
+            if config.ADAPTIVE_THRESHOLD:
+                calibrated = self.snn_ensemble.calibrate_thresholds()
+                if calibrated < self.snn_ensemble.M:
+                    logger.warning(
+                        "Calibration incomplete after %d flows (%d/%d scorers). Extending warmup.",
+                        self._flow_count, calibrated, self.snn_ensemble.M,
+                    )
+                    return
+                threshold_note = "adaptive thresholds calibrated from benign warmup"
+            else:
+                threshold_note = "ADAPTIVE_THRESHOLD disabled; using static z-threshold %.2f" % scorer0.z_threshold
+
+            self.is_warmed_up = True
+            logger.info(
+                "Warmup complete after %d flows (%s). Live scoring and containment active.",
+                self._flow_count,
+                threshold_note,
+            )
             return
 
         # --- Full Live Scoring & Containment (post-warmup) ---
@@ -371,7 +392,7 @@ if __name__ == "__main__":
         "--warmup-flows",
         type=int,
         default=None,
-        help="Number of initial flows to feed for SNN baseline warmup before live scoring (default: 25, or CORTIX_WARMUP_FLOWS env var)",
+        help="Number of initial flows to feed for SNN baseline warmup before live scoring (default: 500, or CORTIX_WARMUP_FLOWS env var). Warmup extends automatically until adaptive calibration succeeds",
     )
     args = parser.parse_args()
 
