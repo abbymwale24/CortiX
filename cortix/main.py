@@ -47,11 +47,33 @@ class CortixDaemon:
     calibrating with supervised classifier, and dispatching DQN containment actions.
     """
 
-    def __init__(self, interface: Optional[str] = None, mode: str = "live"):
+    def __init__(
+        self,
+        interface: Optional[str] = None,
+        mode: str = "live",
+        enforce: Optional[bool] = None,
+        warmup_flows: Optional[int] = None,
+    ):
         self.mode = mode
         self.interface = interface or os.getenv("CORTIX_INTERFACE") or detect_default_interface()
+        if enforce is not None:
+            self.enforce = bool(enforce)
+        else:
+            self.enforce = os.getenv("CORTIX_ENFORCE", "true").lower() in ("true", "1", "yes")
 
-        logger.info("Initializing CortiX Daemon Pipeline. Interface: %s. Mode: %s", self.interface, self.mode)
+        if warmup_flows is not None:
+            self.warmup_flows = max(0, int(warmup_flows))
+        else:
+            self.warmup_flows = max(0, int(config.WARMUP_FLOWS))
+        self.is_warmed_up = self.warmup_flows == 0
+
+        logger.info(
+            "Initializing CortiX Daemon Pipeline. Interface: %s. Mode: %s. Enforce: %s. Warmup: %d flows",
+            self.interface,
+            self.mode,
+            self.enforce,
+            self.warmup_flows,
+        )
         
         # 1. Core database and message bus
         init_db()
@@ -63,7 +85,7 @@ class CortixDaemon:
         self.snn_ensemble = HebbianEnsemble()
         self.classifier = ClassifierInference()
         self.rl_agent = ContainmentAgent()
-        self.executor = ContainmentExecutor(interface=self.interface)
+        self.executor = ContainmentExecutor(interface=self.interface, enforce=self.enforce)
         self.attribution_engine = AttackerAttributionEngine()
         self.alerter = ThreatAlerter()
 
@@ -131,8 +153,37 @@ class CortixDaemon:
         spikes = self.spike_encoder.encode(feature_vector_16)
 
         # 2. Module 2: Deep Hebbian/STDP Anomaly Engine
-        snn_result = self.snn_ensemble.process_event(spikes)
+        snn_result = self.snn_ensemble.process_event(spikes, learn=True)
         z_score = snn_result["z_score"]
+
+        # Check warmup mode: feed initial benign flows without triggering alerts
+        if not self.is_warmed_up:
+            baseline_len = len(self.snn_ensemble.scorers[0]._global_window)
+            if self._flow_count % 5 == 0 or self._flow_count == 1 or self._flow_count >= self.warmup_flows:
+                logger.info(
+                    "Warmup Flow #%d/%d [%s → %s] | SNN baseline: %d samples | z-score: %.2f",
+                    self._flow_count,
+                    self.warmup_flows,
+                    src_ip,
+                    dst_ip,
+                    baseline_len,
+                    z_score,
+                )
+            if self._flow_count >= self.warmup_flows:
+                self.is_warmed_up = True
+                if config.ADAPTIVE_THRESHOLD:
+                    self.snn_ensemble.calibrate_thresholds()
+                logger.info(
+                    "Warmup complete (%d flows processed). SNN baseline established across %d modules. Live scoring and containment active.",
+                    self.warmup_flows,
+                    self.snn_ensemble.M,
+                )
+            return
+
+        # --- Full Live Scoring & Containment (post-warmup) ---
+        if not hasattr(self, "_live_flow_count"):
+            self._live_flow_count = 0
+        self._live_flow_count += 1
 
         # Prepare 40 dimensions list for LSTM-CNN feature parsing
         feature_vector_40 = np.zeros(40, dtype=np.float32)
@@ -143,10 +194,11 @@ class CortixDaemon:
         predicted_class = classifier_result["class"]
         confidence = classifier_result["confidence"]
 
-        # Log live flow progress to stdout every 10 flows
-        if self._flow_count % 10 == 0 or self._flow_count == 1:
+        # Log live flow progress: first 5 flows immediately, then every 10 flows
+        if self._live_flow_count <= 5 or self._live_flow_count % 10 == 0:
             logger.info(
-                "Live Flow #%d [%s → %s] | SNN z-score: %.2f | Class: %s (%.1f%%)",
+                "Live Flow #%d (total #%d) [%s → %s] | SNN z-score: %.2f | Class: %s (%.1f%%)",
+                self._live_flow_count,
                 self._flow_count,
                 src_ip,
                 dst_ip,
@@ -309,9 +361,27 @@ if __name__ == "__main__":
         help="Capturing network interface (default: CORTIX_INTERFACE env var, else the detected default-route interface)",
     )
     parser.add_argument("--mode", type=str, default="live", choices=["live", "offline"], help="Capture mode")
+    parser.add_argument(
+        "--no-enforce",
+        action="store_true",
+        default=False,
+        help="Run in detection-only mode without executing iptables/tc containment rules",
+    )
+    parser.add_argument(
+        "--warmup-flows",
+        type=int,
+        default=None,
+        help="Number of initial flows to feed for SNN baseline warmup before live scoring (default: 25, or CORTIX_WARMUP_FLOWS env var)",
+    )
     args = parser.parse_args()
 
-    daemon = CortixDaemon(interface=args.interface, mode=args.mode)
+    enforce = False if args.no_enforce else None
+    daemon = CortixDaemon(
+        interface=args.interface,
+        mode=args.mode,
+        enforce=enforce,
+        warmup_flows=args.warmup_flows,
+    )
     try:
         daemon.start()
         # Keep main thread alive

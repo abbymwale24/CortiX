@@ -36,6 +36,7 @@ class CortixConfig:
     CAPTURE_INTERFACE: Optional[str] = field(default_factory=_default_capture_interface)
     BPF_FILTER: str = os.getenv("CORTIX_BPF_FILTER", "")
     FLOW_WINDOW_SECONDS: float = 1.0
+    WARMUP_FLOWS: int = int(os.getenv("CORTIX_WARMUP_FLOWS", "25"))
 
     # ──────────────────────────────────────────────
     # Spike Encoding / Thalamic Gating

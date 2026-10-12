@@ -80,12 +80,14 @@ class ContainmentExecutor:
     Runs commands safely with fallback/no-op on non-supported OS (Windows/Mac).
     """
 
-    def __init__(self, interface: Optional[str] = None):
+    def __init__(self, interface: Optional[str] = None, enforce: Optional[bool] = None):
         """
         Args:
             interface: Explicit interface to apply tc rules on. If omitted,
                 the CORTIX_INTERFACE env var is used if set, otherwise the
                 default-route interface is detected at runtime.
+            enforce: If False, runs in detection-only dry-run mode without
+                executing iptables or tc commands. Defaults to True (or CORTIX_ENFORCE env var).
         """
         if interface:
             source = "constructor argument"
@@ -98,8 +100,18 @@ class ContainmentExecutor:
             raise ValueError(f"Invalid network interface name: {interface!r}")
 
         self.interface: Optional[str] = interface
+        if enforce is not None:
+            self.enforce = bool(enforce)
+        else:
+            self.enforce = os.getenv("CORTIX_ENFORCE", "true").lower() in ("true", "1", "yes")
+
         if self.interface:
-            logger.info("ContainmentExecutor using interface %s (from %s)", self.interface, source)
+            logger.info(
+                "ContainmentExecutor using interface %s (from %s) [enforce=%s]",
+                self.interface,
+                source,
+                self.enforce,
+            )
         else:
             logger.warning(
                 "No network interface detected (no default route?). "
@@ -128,6 +140,14 @@ class ContainmentExecutor:
         
         action = action_names.get(action_id, "ALLOW")
         logger.info("Executing containment action: %s on IP: %s", action, src_ip)
+
+        if not self.enforce:
+            logger.info(
+                "ContainmentExecutor [DRY-RUN / NO-ENFORCE]: Simulated action %s on IP: %s (no iptables/tc rules modified)",
+                action,
+                src_ip,
+            )
+            return True
 
         try:
             if action_id == 0:
