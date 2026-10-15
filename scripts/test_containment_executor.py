@@ -9,6 +9,7 @@ prints live rule verification output, performs cleanup, and re-verifies clean ba
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Make `cortix` importable when this script is run directly from scripts/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -26,7 +27,7 @@ def run(cmd: str):
         print(f"[STDERR] {res.stderr.rstrip()}")
     return res
 
-def verify_interface_detection() -> str:
+def verify_interface_detection() -> Optional[str]:
     """
     Exercise the actual interface-resolution logic (no sudo required) before
     running any tc commands, instead of assuming eth0 exists. Covers:

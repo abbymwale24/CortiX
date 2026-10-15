@@ -57,14 +57,14 @@ class CortixDaemon:
         self.mode = mode
         self.interface = interface or os.getenv("CORTIX_INTERFACE") or detect_default_interface()
         if enforce is not None:
-            self.enforce = bool(enforce)
+            self.enforce = enforce
         else:
             self.enforce = os.getenv("CORTIX_ENFORCE", "true").lower() in ("true", "1", "yes")
 
         if warmup_flows is not None:
-            self.warmup_flows = max(0, int(warmup_flows))
+            self.warmup_flows = max(0, warmup_flows)
         else:
-            self.warmup_flows = max(0, int(config.WARMUP_FLOWS))
+            self.warmup_flows = max(0, config.WARMUP_FLOWS)
         self.is_warmed_up = self.warmup_flows == 0
 
         logger.info(
